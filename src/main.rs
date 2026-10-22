@@ -26,6 +26,7 @@ use tubetui::domain::{TabId, Video};
 use tubetui::i18n::Lang;
 use tubetui::media::{self, MediaKind};
 use tubetui::player::{self, Geometry, Launch, Mode, Player};
+use tubetui::relocate;
 use tubetui::store::{self, Paths};
 use tubetui::thumbs::Thumbnails;
 use tubetui::youtube::{self, Items};
@@ -621,6 +622,14 @@ impl Runtime {
                 self.background(move || {
                     Action::Trashed(trash::delete_all(&paths).map(|()| paths).map_err(|e| e.to_string()))
                 });
+            }
+            Effect::MoveFiles { files, dir } => {
+                let (home, lang) = (directories::BaseDirs::new().map(|d| d.home_dir().to_owned()), self.state.lang());
+                self.background(move || Action::Relocated(relocate::move_to(&files, &dir, home.as_deref(), lang)));
+            }
+            Effect::RenameFile { from, name } => {
+                let lang = self.state.lang();
+                self.background(move || Action::Relocated(relocate::rename(&from, &name, lang)));
             }
             Effect::Comments { tab, token } => {
                 let hl = self.state.lang().as_str();

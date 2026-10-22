@@ -15,6 +15,7 @@ pub mod keymap;
 pub mod media;
 pub mod mouse;
 pub mod player;
+pub mod relocate;
 pub mod session;
 pub mod sponsorblock;
 pub mod store;

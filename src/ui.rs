@@ -892,6 +892,24 @@ fn draw_inicio(frame: &mut Frame, state: &State, icons: &Icons, view: &View, are
                     );
                     Line::from(format!(" {icon} {what}, {how} "))
                 }
+                Prompt::Filter => Line::from(format!(
+                    " {} {} ",
+                    icons.section(Section::BuscarVideos),
+                    lang.pick("Filtrar esta lista", "Filter this list")
+                )),
+                Prompt::Move(files) => Line::from(format!(
+                    " {} {} ",
+                    lang.pick("Mover a la carpeta", "Move to the folder"),
+                    match files.as_slice() {
+                        [one] => one.file_name().map_or_else(String::new, |n| truncate(&n.to_string_lossy(), 40)),
+                        many => format!("({} {})", many.len(), lang.pick("archivos", "files")),
+                    }
+                )),
+                Prompt::Rename(from) => Line::from(format!(
+                    " {} {} ",
+                    lang.pick("Nuevo nombre de", "New name for"),
+                    from.file_name().map_or_else(String::new, |n| truncate(&n.to_string_lossy(), 40))
+                )),
                 Prompt::Topics => Line::from(format!(
                     " {} {} ",
                     icons.setting(Setting::DiscoverTopics),
@@ -1007,11 +1025,14 @@ fn draw_listing(frame: &mut Frame, state: &State, icons: &Icons, view: &View, li
         return;
     }
     let breadcrumb: Vec<&str> = state.stack.iter().map(|l| l.title.as_str()).collect();
-    // "3/50": where the selection is.
-    let count = match listing.items.len() {
+    // "3/50": where the selection is; and what the list is narrowed to.
+    let mut count = match listing.items.len() {
         0 => "0".to_owned(),
         len => format!("{}/{len}", listing.selected + 1),
     };
+    if !listing.filter.is_empty() {
+        count.push_str(&format!(" · /{}", listing.filter));
+    }
     let title = match &state.loading {
         Some(loading) => format!(" {} ", loading_text(loading, view.loading.unwrap_or_default(), state.lang())),
         None if listing.items == Items::Settings => format!(" {} ", breadcrumb.join(" › ")),
@@ -1520,6 +1541,10 @@ pub fn hints(state: &State) -> Vec<(String, &'static str)> {
     } else if let Some(prompt) = &state.prompt {
         match prompt {
             Prompt::Videos { .. } => rows(keymap::IN_SEARCH),
+            Prompt::Filter => vec![
+                key("Enter", "dejar el filtro", "keep the filter"),
+                key("Esc", "quitar el filtro", "clear the filter"),
+            ],
             _ => vec![key("Enter", "aceptar", "accept"), key("Esc", "cancelar", "cancel")],
         }
     } else if state.key_context().related {
@@ -1610,6 +1635,9 @@ pub fn hints(state: &State) -> Vec<(String, &'static str)> {
                     MediaKind::Music => key("Enter", "escuchar desde esta canción", "play from this song"),
                     MediaKind::Video => key("Enter", "ver", "play"),
                 },
+                key("m", "mover a otra carpeta", "move to another folder"),
+                key("r", "renombrar", "rename"),
+                key("/", "filtrar la lista", "filter the list"),
                 key("o", "ordenar: carpeta / nombre / peso", "sort: folder / name / size"),
                 // Several files: mark them first, then `x` sends them all.
                 if state.marked_files().is_empty() {
@@ -1633,6 +1661,8 @@ pub fn hints(state: &State) -> Vec<(String, &'static str)> {
                     }
                     Some(DownloadState::Done(_)) => {
                         keys.push(key("Enter", "ver", "play"));
+                        keys.push(key("m", "mover a otra carpeta", "move to another folder"));
+                        keys.push(key("r", "renombrar", "rename"));
                         keys.push(key(
                             "x",
                             "quitar de la lista (el archivo queda)",
@@ -1642,6 +1672,7 @@ pub fn hints(state: &State) -> Vec<(String, &'static str)> {
                     Some(_) => keys.push(key("x", "quitar de la lista", "take off the list")),
                     None => {}
                 }
+                keys.push(key("/", "filtrar la lista", "filter the list"));
                 keys.push(back);
                 keys
             }

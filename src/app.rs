@@ -6,7 +6,7 @@
 //! the settings screen is just state changes plus `SaveSetting` effects.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{
     Config, EffectsConfig, Language, PlayerMode, codec_name, language_name, next_codec, next_language, next_quality,
@@ -16,6 +16,7 @@ use crate::domain::{Download, DownloadState, HistoryEntry, Size, TabId, Video, c
 use crate::i18n::Lang;
 use crate::keymap::KeyContext;
 use crate::media::{LocalFile, MediaKind, parse_dirs};
+use crate::relocate::Outcome;
 use crate::sponsorblock::Segment;
 use crate::theme::Border;
 use crate::update::Update;
@@ -292,6 +293,12 @@ pub enum Prompt {
     MediaDirs(MediaKind),
     /// Comma-separated topics for "Descubrir".
     Topics,
+    /// Narrows a list of local files or downloads as I type.
+    Filter,
+    /// The folder these files go to.
+    Move(Vec<PathBuf>),
+    /// The new name of this file.
+    Rename(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,11 +367,86 @@ pub struct Listing {
     pub all: Option<Vec<Video>>,
     /// "Mis recomendados": `t` switches between my channels and all of YouTube's.
     pub home: bool,
+    /// Files and downloads: the whole list, while `items` shows what matches `filter`.
+    pub source: Option<Items>,
+    /// What the list is narrowed to (lowercase); empty when it shows everything.
+    pub filter: String,
 }
 
 impl Listing {
     pub fn new(title: String, items: Items, kind: ListKind) -> Self {
-        Self { title, items, selected: 0, kind, next: None, more: None, all: None, home: false }
+        Self {
+            title,
+            items,
+            selected: 0,
+            kind,
+            next: None,
+            more: None,
+            all: None,
+            home: false,
+            source: None,
+            filter: String::new(),
+        }
+    }
+
+    /// Shows only what matches `query` (any case) of a files or downloads list; an empty one shows all.
+    fn set_filter(&mut self, query: &str) {
+        let narrowable = matches!(self.items, Items::Files(..) | Items::Downloads(..));
+        let Some(all) = self.source.take().or_else(|| narrowable.then(|| self.items.clone())) else { return };
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            self.items = all;
+        } else {
+            self.items = filter_items(&all, &query);
+            self.source = Some(all);
+        }
+        self.filter = query;
+        self.selected = 0;
+    }
+
+    /// `f` on the list of files shown and on the whole one behind the filter.
+    fn for_each_files(&mut self, mut f: impl FnMut(&mut Vec<LocalFile>)) {
+        for items in std::iter::once(&mut self.items).chain(self.source.as_mut()) {
+            if let Items::Files(files, _) = items {
+                f(files);
+            }
+        }
+    }
+}
+
+/// The `folder` column of `file` once it lives at `to`: relative to the folder
+/// it was scanned from when it still is below it, else just the folder's name.
+fn folder_after(file: &LocalFile, to: &Path) -> String {
+    let Some(parent) = to.parent() else { return String::new() };
+    let depth = Path::new(&file.folder).components().count();
+    let root = file.path.parent().filter(|p| p.ends_with(&file.folder)).and_then(|p| p.ancestors().nth(depth));
+    match root.and_then(|root| parent.strip_prefix(root).ok()).filter(|rel| !rel.as_os_str().is_empty()) {
+        Some(rel) => rel.display().to_string(),
+        None => parent.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+    }
+}
+
+/// The rows of a files or downloads list that mention `query` (lowercase).
+fn filter_items(items: &Items, query: &str) -> Items {
+    let has = |text: &str| text.to_lowercase().contains(query);
+    match items {
+        Items::Files(files, kind) => {
+            Items::Files(files.iter().filter(|f| has(&f.name) || has(&f.folder)).cloned().collect(), *kind)
+        }
+        Items::Downloads(downloads) => Items::Downloads(
+            downloads
+                .iter()
+                .filter(|d| {
+                    let path = match &d.state {
+                        DownloadState::Done(path) => path.display().to_string(),
+                        _ => String::new(),
+                    };
+                    has(&d.video.title) || has(&d.video.channel) || has(&path)
+                })
+                .cloned()
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -555,6 +637,12 @@ pub enum Action {
     UpdateFound(Update),
     /// Mark / unmark the selected local file and go to the next one.
     ToggleMark,
+    /// Ask where to move the marked files (or the selected one).
+    MoveFiles,
+    /// Ask for a new name for the selected file.
+    Rename,
+    /// Files moved or renamed (and the reason it stopped, if it did).
+    Relocated(Outcome),
     /// Ask to move the marked files (or the selected one) to the trash.
     Trash,
     /// The files went to the trash (or the reason they did not).
@@ -597,6 +685,16 @@ pub enum Effect {
     SaveWatched(String),
     /// Move these files to the system trash.
     Trash(Vec<PathBuf>),
+    /// Move these files into a folder (`~/` and relative paths allowed).
+    MoveFiles {
+        files: Vec<PathBuf>,
+        dir: String,
+    },
+    /// Give this file another name.
+    RenameFile {
+        from: PathBuf,
+        name: String,
+    },
     /// Fetch the top comments of a tab's video.
     Comments {
         tab: TabId,
@@ -1228,11 +1326,22 @@ impl State {
             Action::Down => return self.move_selection(1),
             Action::Enter => return self.enter(),
             Action::Back => self.back(),
+            Action::FocusSearch if self.local_list().is_some() => {
+                let current = self.listing().map(|l| l.filter.clone()).unwrap_or_default();
+                self.start_prompt(Prompt::Filter, current);
+            }
             Action::FocusSearch => self.search_videos(),
+            Action::MoveFiles => self.ask_move(),
+            Action::Rename => self.ask_rename(),
+            Action::Relocated(outcome) => return self.relocated(outcome),
             Action::CycleScope => self.cycle_scope(),
-            Action::Input(c) => self.query.push(c),
+            Action::Input(c) => {
+                self.query.push(c);
+                self.narrow();
+            }
             Action::Backspace => {
                 self.query.pop();
+                self.narrow();
             }
             Action::Loaded(id, result) => return self.loaded(id, result, None),
             Action::Page(id, result) => return self.page(id, result),
@@ -1325,6 +1434,10 @@ impl State {
                     self.file_sort = self.file_sort.next();
                     self.file_sort.sort(files);
                     *selected = current.and_then(|p| files.iter().position(|f| f.path == p)).unwrap_or(0);
+                    let sort = self.file_sort;
+                    if let Some(Items::Files(all, _)) = self.stack.last_mut().and_then(|l| l.source.as_mut()) {
+                        sort.sort(all);
+                    }
                     self.status = format!("{}: {}", self.tr("Orden", "Sorted by"), self.file_sort.label(self.lang()));
                 }
             }
@@ -1960,7 +2073,9 @@ impl State {
 
     fn submit(&mut self, prompt: Prompt) -> Vec<Effect> {
         let query = self.query.trim().to_owned();
-        if query.is_empty() && !matches!(prompt, Prompt::DownloadDir | Prompt::MediaDirs(_) | Prompt::Topics) {
+        if query.is_empty()
+            && !matches!(prompt, Prompt::DownloadDir | Prompt::MediaDirs(_) | Prompt::Topics | Prompt::Filter)
+        {
             return Vec::new();
         }
         self.prompt = None;
@@ -2003,6 +2118,12 @@ impl State {
                 };
                 vec![Effect::SaveSetting { table: "media", key, value: SettingValue::List(dirs) }]
             }
+            Prompt::Filter => Vec::new(),
+            Prompt::Move(files) => {
+                self.status = format!("{} {}…", self.tr("Moviendo", "Moving"), files.len());
+                vec![Effect::MoveFiles { files, dir: query }]
+            }
+            Prompt::Rename(from) => vec![Effect::RenameFile { from, name: query }],
             Prompt::Topics => {
                 let topics = parse_dirs(&query);
                 self.config.search.topics = topics.clone();
@@ -2228,7 +2349,15 @@ impl State {
     }
 
     fn back(&mut self) {
-        if self.prompt.take().is_some() {
+        if let Some(prompt) = self.prompt.take() {
+            if prompt == Prompt::Filter {
+                self.apply_filter("");
+            }
+            return;
+        }
+        if self.focus == Focus::List && self.listing().is_some_and(|l| !l.filter.is_empty()) {
+            // The filter goes first; the next Esc leaves the list.
+            self.apply_filter("");
             return;
         }
         if self.fullscreen {
@@ -2412,12 +2541,17 @@ impl State {
                     MediaKind::Video => item("Ver", "Play", "Enter", Action::Enter),
                 });
                 items.push(item("Marcar / desmarcar", "Mark / unmark", "espacio", Action::ToggleMark));
+                items.push(item("Mover a otra carpeta", "Move to another folder", "m", Action::MoveFiles));
+                items.push(item("Renombrar", "Rename", "r", Action::Rename));
+                items.push(item("Filtrar la lista", "Filter the list", "/", Action::FocusSearch));
                 items.push(item("Cambiar el orden", "Change the sort order", "o", Action::CycleSort));
                 items.push(item("A la papelera", "To the trash", "x", Action::Trash));
             }
             Items::Downloads(downloads) => match downloads.get(selected).map(|d| &d.state) {
                 Some(DownloadState::Done(_)) => {
                     items.push(item("Ver", "Play", "Enter", Action::Enter));
+                    items.push(item("Mover a otra carpeta", "Move to another folder", "m", Action::MoveFiles));
+                    items.push(item("Renombrar", "Rename", "r", Action::Rename));
                     items.push(item("Quitar de la lista", "Remove from the list", "x", Action::Trash));
                 }
                 Some(_) => items.push(item("Cancelar / quitar", "Cancel / remove", "x", Action::Trash)),
@@ -2532,6 +2666,121 @@ impl State {
         }
     }
 
+    /// The list of local files or downloads in front of me, if that is what is shown.
+    fn local_list(&self) -> Option<&Listing> {
+        self.stack.last().filter(|l| {
+            self.active == 0 && self.focus == Focus::List && matches!(l.items, Items::Files(..) | Items::Downloads(..))
+        })
+    }
+
+    /// The file of the selected row: a local file, or a finished download.
+    fn selected_path(&self) -> Option<PathBuf> {
+        let listing = self.local_list()?;
+        match &listing.items {
+            Items::Files(files, _) => files.get(listing.selected).map(|f| f.path.clone()),
+            Items::Downloads(downloads) => match downloads.get(listing.selected).map(|d| &d.state) {
+                Some(DownloadState::Done(path)) => Some(path.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn apply_filter(&mut self, query: &str) {
+        if let Some(listing) = self.stack.last_mut().filter(|_| self.active == 0) {
+            listing.set_filter(query);
+        }
+    }
+
+    /// While the filter box is open the list follows what I type.
+    fn narrow(&mut self) {
+        if self.prompt == Some(Prompt::Filter) {
+            let query = self.query.clone();
+            self.apply_filter(&query);
+        }
+    }
+
+    fn ask_move(&mut self) {
+        let mut paths = self.marked_files();
+        if paths.is_empty() {
+            paths.extend(self.selected_path());
+        }
+        let Some(dir) = paths.first().and_then(|p| p.parent()).map(|p| p.display().to_string()) else {
+            self.note_no_file();
+            return;
+        };
+        self.start_prompt(Prompt::Move(paths), dir);
+    }
+
+    fn ask_rename(&mut self) {
+        let Some(path) = self.selected_path() else {
+            self.note_no_file();
+            return;
+        };
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.start_prompt(Prompt::Rename(path), name);
+    }
+
+    /// Only on a list of files, or on a finished download.
+    fn note_no_file(&mut self) {
+        if self.local_list().is_some() {
+            self.status = self.tr("No hay un archivo para esto", "There is no file for this").into();
+        }
+    }
+
+    /// Files moved or renamed: the lists, the marks and the downloads follow them.
+    fn relocated(&mut self, outcome: Outcome) -> Vec<Effect> {
+        let Outcome { moved, error } = outcome;
+        for listing in &mut self.stack {
+            listing.for_each_files(|files| {
+                for file in files.iter_mut() {
+                    if let Some((_, to)) = moved.iter().find(|(from, _)| *from == file.path) {
+                        file.folder = folder_after(file, to);
+                        file.name = to.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        file.path = to.clone();
+                    }
+                }
+            });
+        }
+        let mut downloads_changed = false;
+        for download in &mut self.downloads {
+            if let DownloadState::Done(path) = &mut download.state
+                && let Some((_, to)) = moved.iter().find(|(from, _)| from == path)
+            {
+                *path = to.clone();
+                downloads_changed = true;
+            }
+        }
+        for (from, to) in &moved {
+            if self.marked.remove(from) {
+                self.marked.insert(to.clone());
+            }
+        }
+        let sort = self.file_sort;
+        let selected_path = moved.first().map(|(_, to)| to.clone());
+        for listing in &mut self.stack {
+            listing.for_each_files(|files| sort.sort(files));
+            if let (Some(path), Items::Files(files, _)) = (&selected_path, &listing.items)
+                && let Some(i) = files.iter().position(|f| f.path == *path)
+            {
+                listing.selected = i;
+            }
+        }
+        self.status = match error {
+            Some(error) => format!("❌ {error}"),
+            None => {
+                let (done, one, many) =
+                    (self.tr("Listo:", "Done:"), self.tr("archivo", "file"), self.tr("archivos", "files"));
+                format!("✓ {done} {} {}", moved.len(), if moved.len() == 1 { one } else { many })
+            }
+        };
+        if downloads_changed {
+            self.sync_downloads();
+            return vec![Effect::SaveDownloads(self.downloads.clone())];
+        }
+        Vec::new()
+    }
+
     fn ask_trash(&mut self) {
         let mut paths = self.marked_files();
         if paths.is_empty() {
@@ -2590,10 +2839,9 @@ impl State {
             }
         };
         for listing in &mut self.stack {
-            if let Items::Files(files, _) = &mut listing.items {
-                files.retain(|f| !paths.contains(&f.path));
-                listing.selected = listing.selected.min(files.len().saturating_sub(1));
-            }
+            listing.for_each_files(|files| files.retain(|f| !paths.contains(&f.path)));
+            let shown = listing.items.len();
+            listing.selected = listing.selected.min(shown.saturating_sub(1));
         }
         self.marked.retain(|p| !paths.contains(p));
         let (sent, recover) = (
@@ -2948,8 +3196,15 @@ impl State {
     /// Shown download lists follow `self.downloads`.
     fn sync_downloads(&mut self) {
         for listing in self.stack.iter_mut().filter(|l| l.kind == ListKind::Downloads) {
-            listing.items = Items::Downloads(self.downloads.clone());
-            listing.selected = listing.selected.min(self.downloads.len().saturating_sub(1));
+            let all = Items::Downloads(self.downloads.clone());
+            if listing.filter.is_empty() {
+                listing.items = all;
+            } else {
+                listing.items = filter_items(&all, &listing.filter);
+                listing.source = Some(all);
+            }
+            let shown = listing.items.len();
+            listing.selected = listing.selected.min(shown.saturating_sub(1));
         }
     }
 
@@ -3990,6 +4245,108 @@ mod tests {
         s.update(Action::Trashed(Err("permiso denegado".into())));
         assert!(s.status.contains("permiso denegado"));
         assert_eq!(s.listing().unwrap().items.len(), 1);
+    }
+
+    fn music_list(names: &[&str]) -> State {
+        let mut s = state();
+        let id = load_id(&open(&mut s, Section::MiMusica));
+        s.update(Action::Loaded(id, Ok(Items::Files(files(names), MediaKind::Music))));
+        s
+    }
+
+    #[test]
+    fn slash_filters_a_file_list_as_i_type_and_esc_brings_it_back() {
+        let mut s = music_list(&["Tema uno", "Otro", "tema dos"]);
+        s.update(Action::FocusSearch);
+        assert_eq!(s.prompt, Some(Prompt::Filter));
+        for c in "TEMA".chars() {
+            s.update(Action::Input(c));
+        }
+        assert_eq!(s.listing().unwrap().items.len(), 2, "any case, live");
+        s.update(Action::Backspace);
+        s.update(Action::Backspace);
+        assert_eq!(s.listing().unwrap().items.len(), 2, "'te' still matches both");
+        s.update(Action::Input('x'));
+        assert_eq!(s.listing().unwrap().items.len(), 0);
+        s.update(Action::Backspace);
+        s.update(Action::Enter);
+        assert_eq!(s.prompt, None);
+        assert_eq!(s.listing().unwrap().filter, "te", "Enter keeps it");
+        s.update(Action::Back);
+        assert_eq!(s.listing().unwrap().items.len(), 3, "the first Esc only lifts the filter");
+        assert_eq!(s.stack.len(), 1);
+        s.update(Action::FocusSearch);
+        s.update(Action::Input('o'));
+        s.update(Action::Back);
+        assert_eq!(s.listing().unwrap().items.len(), 3, "Esc in the box clears it too");
+    }
+
+    #[test]
+    fn slash_still_searches_youtube_outside_file_lists() {
+        let mut s = with_videos(&["a"]);
+        s.update(Action::FocusSearch);
+        assert!(matches!(s.prompt, Some(Prompt::Videos { .. })));
+    }
+
+    #[test]
+    fn moving_asks_for_a_folder_and_the_list_follows() {
+        let mut s = music_list(&["a", "b", "c"]);
+        s.update(Action::ToggleMark);
+        s.update(Action::Down);
+        s.update(Action::ToggleMark);
+        s.update(Action::MoveFiles);
+        let marked = vec![PathBuf::from("/m/a.mp3"), PathBuf::from("/m/c.mp3")];
+        assert_eq!(s.prompt, Some(Prompt::Move(marked.clone())));
+        assert_eq!(s.query, "/m", "starts at the folder they are in");
+        s.query = "/otra".into();
+        assert_eq!(s.update(Action::Enter), [Effect::MoveFiles { files: marked.clone(), dir: "/otra".into() }]);
+        let moved = vec![(marked[0].clone(), PathBuf::from("/otra/a.mp3"))];
+        s.update(Action::Relocated(Outcome { moved, error: Some("ya existe".into()) }));
+        assert!(s.status.contains("ya existe"), "{}", s.status);
+        let Items::Files(files, _) = &s.listing().unwrap().items else { panic!() };
+        assert!(files.iter().any(|f| f.path == Path::new("/otra/a.mp3")));
+        assert!(s.marked.contains(&PathBuf::from("/m/c.mp3")) && !s.marked.contains(&marked[0]));
+    }
+
+    #[test]
+    fn renaming_starts_from_the_current_name() {
+        let mut s = music_list(&["a", "b"]);
+        s.update(Action::Down);
+        s.update(Action::Rename);
+        assert_eq!(s.prompt, Some(Prompt::Rename(PathBuf::from("/m/b.mp3"))));
+        assert_eq!(s.query, "b");
+        s.update(Action::Input('2'));
+        assert_eq!(
+            s.update(Action::Enter),
+            [Effect::RenameFile { from: PathBuf::from("/m/b.mp3"), name: "b2".into() }]
+        );
+        let moved = vec![(PathBuf::from("/m/b.mp3"), PathBuf::from("/m/b2.mp3"))];
+        s.update(Action::Relocated(Outcome { moved, error: None }));
+        let Items::Files(files, _) = &s.listing().unwrap().items else { panic!() };
+        assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["a", "b2"]);
+        assert_eq!(s.listing().unwrap().selected, 1, "the selection stays on the renamed file");
+    }
+
+    #[test]
+    fn moving_and_renaming_need_a_file() {
+        let mut s = with_videos(&["a"]);
+        s.update(Action::MoveFiles);
+        s.update(Action::Rename);
+        assert_eq!(s.prompt, None);
+    }
+
+    #[test]
+    fn a_finished_download_can_be_renamed_and_the_list_remembers() {
+        let mut s = state();
+        let video = crate::domain::video("a");
+        s.downloads.push(Download { id: 1, video, state: DownloadState::Done("/d/a.mp4".into()) });
+        s.update(Action::OpenSection(Section::ALL.iter().position(|x| *x == Section::Descargas).unwrap()));
+        s.update(Action::Rename);
+        assert_eq!(s.prompt, Some(Prompt::Rename(PathBuf::from("/d/a.mp4"))));
+        let moved = vec![(PathBuf::from("/d/a.mp4"), PathBuf::from("/d/nuevo.mp4"))];
+        let effects = s.update(Action::Relocated(Outcome { moved, error: None }));
+        assert!(matches!(effects.as_slice(), [Effect::SaveDownloads(d)]
+            if d[0].state == DownloadState::Done("/d/nuevo.mp4".into())));
     }
 
     #[test]

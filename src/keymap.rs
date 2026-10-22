@@ -69,13 +69,10 @@ pub const IN_LISTS: &[(&str, Text)] = &[
     ("Enter", Text::new("ver video · abrir canal · cambiar opción", "play · open channel · change option")),
     ("Esc  ←  h", Text::new("volver", "back")),
     ("Tab", Text::new("ir al menú", "go to the menu")),
-    ("/", Text::new("buscar (dentro de un canal: en ese canal)", "search (inside a channel: in that channel)")),
+    ("/", Text::new("buscar · en archivos: filtrar", "search · in files: filter")),
     ("v  t  o", Text::new("vistos · t: todo o lo mío · o: ordenar", "watched · t: all or mine · o: sort")),
-    ("espacio", Text::new("marcar varios (Mis videos, Mi música)", "mark several (My videos, My music)")),
-    (
-        "x  Supr",
-        Text::new("a la papelera (pide s) · Historial: quitarlo", "to the trash (asks y) · History: remove it"),
-    ),
+    ("espacio m r", Text::new("marcar · mover · renombrar archivos", "mark · move · rename files")),
+    ("x  Supr", Text::new("papelera (pide s) · Historial: quitarlo", "trash (asks y) · History: remove it")),
 ];
 
 pub const WITH_MOUSE: &[(&str, Text)] = &[
@@ -245,6 +242,8 @@ fn lists(code: KeyCode) -> Option<Action> {
         KeyCode::Char('v') => Some(Action::ToggleWatched),
         KeyCode::Char('t') => Some(Action::ToggleHomeAll),
         KeyCode::Char('o') => Some(Action::CycleSort),
+        KeyCode::Char('m') => Some(Action::MoveFiles),
+        KeyCode::Char('r') => Some(Action::Rename),
         KeyCode::Char('j') | KeyCode::Down => Some(Action::Down),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::Up),
         KeyCode::Enter => Some(Action::Enter),

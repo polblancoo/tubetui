@@ -17,6 +17,7 @@ use crate::i18n::Lang;
 use crate::keymap::KeyContext;
 use crate::media::{LocalFile, MediaKind, parse_dirs};
 use crate::sponsorblock::Segment;
+use crate::theme::Border;
 use crate::update::Update;
 use crate::youtube::{Comment, HistoryPage, Items, Rating, SearchPage, Source, Watch};
 
@@ -148,6 +149,8 @@ pub enum Setting {
     SponsorBlock,
     AppLang,
     Icons,
+    Theme,
+    Border,
     Thumbnails,
     Mouse,
     Splash,
@@ -168,7 +171,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::Browser,
         Self::ImportCookies,
         Self::Refresh,
@@ -181,6 +184,8 @@ impl Setting {
         Self::SponsorBlock,
         Self::AppLang,
         Self::Icons,
+        Self::Theme,
+        Self::Border,
         Self::Thumbnails,
         Self::Mouse,
         Self::Splash,
@@ -216,6 +221,8 @@ impl Setting {
             Self::SponsorBlock => ("Saltar patrocinios (SponsorBlock)", "Skip sponsors (SponsorBlock)"),
             Self::AppLang => ("Idioma de la app (Ctrl+y + l)", "App language (Ctrl+y + l)"),
             Self::Icons => ("Íconos", "Icons"),
+            Self::Theme => ("Tema de colores", "Colour theme"),
+            Self::Border => ("Bordes de los paneles", "Panel borders"),
             Self::Thumbnails => ("Portadas de los videos (kitty)", "Video thumbnails (kitty)"),
             Self::Mouse => ("Mouse (para copiar texto: Shift)", "Mouse (to copy text: Shift)"),
             Self::Splash => ("Logo al abrir la app", "Logo when the app opens"),
@@ -1060,6 +1067,14 @@ impl State {
             }
             Setting::AppLang => lang.name().into(),
             Setting::Icons => self.config.ui.icons.as_str().into(),
+            Setting::Theme => self.config.ui.theme.name().into(),
+            Setting::Border => match self.config.ui.border {
+                Border::Rounded => self.tr("redondeados", "rounded"),
+                Border::Plain => self.tr("rectos", "plain"),
+                Border::Double => self.tr("dobles", "double"),
+                Border::Thick => self.tr("gruesos", "thick"),
+            }
+            .into(),
             Setting::Thumbnails => {
                 let (es, en) = on_off(self.config.ui.thumbnails);
                 self.tr(es, en).into()
@@ -1794,6 +1809,14 @@ impl State {
             Setting::Icons => {
                 self.config.ui.icons = self.config.ui.icons.next();
                 save("ui", "icons", SettingValue::Text(self.config.ui.icons.as_str().into()))
+            }
+            Setting::Theme => {
+                self.config.ui.theme = self.config.ui.theme.next();
+                save("ui", "theme", SettingValue::Text(self.config.ui.theme.as_str().into()))
+            }
+            Setting::Border => {
+                self.config.ui.border = self.config.ui.border.next();
+                save("ui", "border", SettingValue::Text(self.config.ui.border.as_str().into()))
             }
             Setting::Thumbnails => {
                 self.config.ui.thumbnails = !self.config.ui.thumbnails;
@@ -4041,6 +4064,8 @@ mod tests {
         assert_eq!(s.config.player.mode, PlayerMode::Overlay);
         assert_eq!(change(&mut s, Setting::Icons), [saved("ui", "icons", text("nerd"))]);
         assert_eq!(s.config.ui.icons, IconSet::Nerd);
+        assert_eq!(change(&mut s, Setting::Theme), [saved("ui", "theme", text("catppuccin"))]);
+        assert_eq!(change(&mut s, Setting::Border), [saved("ui", "border", text("plain"))]);
         assert_eq!(change(&mut s, Setting::EditFile), [Effect::EditConfig]);
     }
 

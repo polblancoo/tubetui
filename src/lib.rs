@@ -18,6 +18,7 @@ pub mod player;
 pub mod session;
 pub mod sponsorblock;
 pub mod store;
+pub mod theme;
 pub mod thumbs;
 pub mod ui;
 pub mod update;

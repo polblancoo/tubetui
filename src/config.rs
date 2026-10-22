@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{Lang, Text};
+use crate::theme::{Border, Theme};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -145,6 +146,8 @@ pub struct UiConfig {
     pub sidebar: bool,
     pub max_tabs: usize,
     pub icons: IconSet,
+    pub theme: Theme,
+    pub border: Border,
     /// Interface language; unset follows the system locale.
     pub lang: Option<Lang>,
     /// Video thumbnails in the preview panel (kitty only).
@@ -326,6 +329,8 @@ impl Default for UiConfig {
             sidebar: true,
             max_tabs: 9,
             icons: IconSet::Emoji,
+            theme: Theme::default(),
+            border: Border::default(),
             lang: None,
             thumbnails: true,
             mouse: true,

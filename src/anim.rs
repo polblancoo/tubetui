@@ -10,11 +10,16 @@ use ratatui::style::Color;
 use tachyonfx::{EffectManager, Interpolation, Motion, fx};
 
 use crate::app::State;
-use crate::ui;
+use crate::{theme, ui};
 
 /// The terminal background of the theme, where text fades in from.
-const BACKGROUND: Color = Color::Rgb(26, 27, 38);
-const ACCENT: Color = Color::Rgb(122, 162, 247);
+fn background() -> Color {
+    theme::palette().background.unwrap_or(Color::Rgb(26, 27, 38))
+}
+
+fn accent() -> Color {
+    theme::palette().blue
+}
 
 /// What is on screen, as far as animations care.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,22 +107,22 @@ impl Animations {
         let timer = |ms| (ms, Interpolation::QuadOut);
         match change {
             Transition::Splash => {
-                let flash = fx::fade_from_fg(BACKGROUND, timer(700));
+                let flash = fx::fade_from_fg(background(), timer(700));
                 self.add(fx::parallel(&[fx::coalesce(timer(600)), flash]).with_area(screen));
             }
             Transition::Startup => {
                 if let Some(sidebar) = areas.sidebar {
-                    self.add(fx::sweep_in(Motion::UpToDown, 8, 0, BACKGROUND, timer(450)).with_area(sidebar));
+                    self.add(fx::sweep_in(Motion::UpToDown, 8, 0, background(), timer(450)).with_area(sidebar));
                 }
                 self.add(fx::coalesce(timer(500)).with_area(areas.content));
             }
             Transition::Page => {
-                self.add(fx::sweep_in(Motion::LeftToRight, 12, 0, BACKGROUND, timer(300)).with_area(areas.content));
+                self.add(fx::sweep_in(Motion::LeftToRight, 12, 0, background(), timer(300)).with_area(areas.content));
             }
             Transition::Dialog => {
                 if let Some(dialog) = ui::dialog_area(state, screen) {
-                    let flash = fx::fade_from_fg(ACCENT, timer(350));
-                    let reveal = fx::sweep_in(Motion::UpToDown, 6, 0, BACKGROUND, timer(250));
+                    let flash = fx::fade_from_fg(accent(), timer(350));
+                    let reveal = fx::sweep_in(Motion::UpToDown, 6, 0, background(), timer(250));
                     self.add(fx::parallel(&[reveal, flash]).with_area(dialog));
                 }
             }

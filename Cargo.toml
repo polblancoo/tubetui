@@ -46,4 +46,9 @@ assets = [
     ["target/release/tubetui", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/tubetui/README.md", "644"],
     ["packaging/linux/tubetui.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/tubetui-kitty.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/tubetui.svg", "usr/share/icons/hicolor/scalable/apps/tubetui.svg", "644"],
+    ["packaging/linux/tubetui-48.png", "usr/share/icons/hicolor/48x48/apps/tubetui.png", "644"],
+    ["packaging/linux/tubetui-128.png", "usr/share/icons/hicolor/128x128/apps/tubetui.png", "644"],
+    ["packaging/linux/tubetui-256.png", "usr/share/icons/hicolor/256x256/apps/tubetui.png", "644"],
 ]

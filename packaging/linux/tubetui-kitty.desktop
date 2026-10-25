@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=tubetui (kitty)
+GenericName=YouTube in the terminal
+GenericName[es]=YouTube en la terminal
+Comment=Browse and watch YouTube from the terminal
+Comment[es]=Explorá y mirá YouTube desde la terminal
+TryExec=kitty
+Exec=kitty --class tubetui --title tubetui tubetui
+Terminal=false
+Icon=tubetui
+StartupWMClass=tubetui
+Categories=AudioVideo;Video;Player;ConsoleOnly;
+Keywords=youtube;video;mpv;terminal;

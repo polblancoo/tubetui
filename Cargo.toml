@@ -1,6 +1,6 @@
 [package]
 name = "tubetui"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 rust-version = "1.88"
 description = "YouTube and your local videos and music in the terminal: tabs, video embedded in kitty via mpv, subscriptions, playlists, history with resume, downloads, SponsorBlock, chapters, comments and browser login"
@@ -17,7 +17,7 @@ anyhow = "1.0.104"
 base64 = "0.22"
 clap = { version = "4.6.7", features = ["derive"] }
 directories = "6.0.0"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 ratatui = "0.30"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -52,3 +52,6 @@ assets = [
     ["packaging/linux/tubetui-128.png", "usr/share/icons/hicolor/128x128/apps/tubetui.png", "644"],
     ["packaging/linux/tubetui-256.png", "usr/share/icons/hicolor/256x256/apps/tubetui.png", "644"],
 ]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"

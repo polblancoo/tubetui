@@ -1,5 +1,7 @@
 # tubetui
 
+<img src="https://raw.githubusercontent.com/polblancoo/tubetui/main/docs/logo.png" alt="tubetui logo" width="96" align="right">
+
 YouTube — and your own videos and music — in the terminal, written in Rust
 with [ratatui](https://ratatui.rs). Videos play through [mpv](https://mpv.io):
 in their own window by default (its tab shows the video's details and what to

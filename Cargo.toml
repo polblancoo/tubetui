@@ -1,6 +1,6 @@
 [package]
 name = "tubetui"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2024"
 rust-version = "1.88"
 description = "YouTube and your local videos and music in the terminal: tabs, video embedded in kitty via mpv, subscriptions, playlists, history with resume, downloads, SponsorBlock, chapters, comments and browser login"

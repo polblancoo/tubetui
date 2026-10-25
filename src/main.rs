@@ -99,6 +99,8 @@ fn main() -> anyhow::Result<()> {
     log_panics(crash_log.clone());
 
     let mut runtime = Runtime::new(config, config_path, paths, later);
+    tubetui::windowicon::set();
+    tubetui::tray::start(runtime.tx.clone(), runtime.state.config.ui.lang.unwrap_or_default());
     let mut terminal = ratatui::init();
     set_focus_reports(true);
     let result = runtime.run(&mut terminal);

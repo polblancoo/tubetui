@@ -105,6 +105,9 @@ Every video opens in its own tab.
 - English or Spanish, following the system language until you pick one
 - Short animations when pages and dialogs open, each one can be turned off
 - An **About** page with links and how to support the project
+- On Linux (X11), its own **icon** on the terminal window and in the **system
+  tray**; click the tray icon for a menu (show the terminal, pause / resume,
+  open a section, settings, quit)
 
 ## Requirements
 
@@ -203,6 +206,26 @@ it moves, hides when you switch tabs, open the help or focus another
 program, and lets clicks and keys through to the app. It needs X11 and
 `xdotool`, `xwininfo` and `xprop` (`wmctrl` keeps it off the taskbar);
 without them, or on Wayland, it falls back to a separate window.
+
+## Taskbar icon and system tray (X11)
+
+tubetui puts its own icon on the terminal window it runs in (kitty and most
+terminals export `$WINDOWID`), so the taskbar and the title bar show it
+instead of the terminal's. It also docks an icon in the **system tray**
+(any XEmbed tray: Fluxbox, trayer, tint2, most panels) while it runs. A click
+opens a menu:
+
+- **Show terminal**: brings the window to the front
+- **Pause / resume** the video that plays
+- **My recommendations**, **Search videos**, **My Videos**, **My Music**,
+  **Downloads** and **Settings**: open that section and show the terminal
+- **Quit** (it asks first if there are downloads running)
+
+`Esc` or a click outside closes the menu. Without a tray, on Wayland or inside
+tmux, nothing is shown and nothing breaks. The Debian package also installs the
+icon and two launchers: `tubetui` (any terminal) and `tubetui (kitty)`, which
+opens kitty with its own window class so the taskbar groups it under the
+tubetui icon.
 
 ## Terminal multiplexers (tmux, zellij, herdr)
 

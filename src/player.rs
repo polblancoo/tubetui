@@ -160,6 +160,36 @@ fn format_for(config: &PlayerConfig, mode: Mode, audio_only: bool) -> String {
     if audio_only { audio_format(config) } else { ytdl_format(config, mode) }
 }
 
+/// The address of a live stream's best quality up to `max_height`, as
+/// streamlink finds it; `None` if it fails or takes too long (yt-dlp then plays it).
+pub fn streamlink_url(streamlink: &std::path::Path, url: &str, max_height: u32) -> Option<String> {
+    let mut child = Command::new(streamlink)
+        .args(["--stream-url", &format!("--stream-sorting-excludes=>{max_height}p"), url, "best"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    parse_stream_url(&out)
+}
+
+/// The one address `streamlink --stream-url` prints.
+fn parse_stream_url(output: &str) -> Option<String> {
+    let line = output.lines().map(str::trim).find(|l| !l.is_empty())?;
+    line.starts_with("http").then(|| line.to_owned())
+}
+
 /// Everything about one playback except where it is drawn.
 pub struct Launch<'a> {
     pub config: &'a PlayerConfig,
@@ -793,6 +823,13 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn streamlink_prints_one_address() {
+        assert_eq!(parse_stream_url("https://x/live.m3u8\n").as_deref(), Some("https://x/live.m3u8"));
+        assert_eq!(parse_stream_url("error: no playable streams\n"), None);
+        assert_eq!(parse_stream_url(""), None);
+    }
+
     #[test]
     fn start_is_detected_when_mpv_reports_a_position() {
         let loading = Arc::new(AtomicBool::new(false));

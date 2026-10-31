@@ -578,6 +578,8 @@ pub enum Action {
     CloseTab,
     /// The player went away on its own (window closed, video ended, failed to start).
     PlayerClosed(TabId, Option<String>),
+    /// streamlink's answer for a live stream: the address to play, or `None` to use yt-dlp.
+    LiveSource(TabId, Option<String>),
     /// The player of a YouTube video stopped here (seconds), to resume it later.
     Stopped {
         video: String,
@@ -769,6 +771,9 @@ pub enum Effect {
     Notify(String),
     SaveDownloads(Vec<Download>),
     Open(TabId, Playback),
+    /// Start the player as given, without looking for a better source (a live
+    /// stream already went through streamlink, or streamlink was no help).
+    OpenDirect(TabId, Playback),
     /// Restart a tab's player with a changed playback, at the second it was at.
     Reopen(TabId, Playback),
     Close(TabId),
@@ -1502,6 +1507,15 @@ impl State {
                     self.remove_tab(id);
                     return vec![Effect::Close(id)];
                 }
+            }
+            Action::LiveSource(id, url) => {
+                // The tab may have been closed while streamlink was working.
+                let Some(tab) = self.tabs.iter().find(|t| t.id == id) else { return Vec::new() };
+                let mut playback = tab.playback.clone();
+                if let Some(url) = url {
+                    playback.queue = vec![url];
+                }
+                return vec![Effect::OpenDirect(id, playback)];
             }
             Action::PlayerClosed(id, error) => {
                 let keep = error.is_none() && self.tabs.iter().any(|t| t.id == id && self.details_shown(t));

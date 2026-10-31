@@ -116,6 +116,7 @@ Every video opens in its own tab.
 - [`mpv`](https://mpv.io) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) in `PATH` (on Windows they are
   also found where winget, scoop or the mpv installer leave them)
 - For embedded video: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal
+- Optional: [`streamlink`](https://streamlink.github.io) plays live streams (🔴) instead of yt-dlp; without it yt-dlp does
 - Optional: `wmctrl` (X11) for window fullscreen
 
 tubetui checks this itself: when something needed is missing (or yt-dlp is

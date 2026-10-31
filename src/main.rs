@@ -22,7 +22,7 @@ use ratatui::layout::Rect;
 use tubetui::anim::Animations;
 use tubetui::app::{Action, Effect, Playback, PlayerCommand, SettingValue, State};
 use tubetui::config::{self, Config, PlayerMode};
-use tubetui::domain::{TabId, Video};
+use tubetui::domain::{Live, TabId, Video};
 use tubetui::i18n::Lang;
 use tubetui::media::{self, MediaKind};
 use tubetui::player::{self, Geometry, Launch, Mode, Player};
@@ -809,14 +809,21 @@ impl Runtime {
                     dbg(format!("downloads.json: {e}"));
                 }
             }
-            Effect::Open(id, playback) => self.open(id, &playback, false, terminal.size()?.into()),
+            Effect::Open(id, playback) => {
+                if !self.resolve_live(id, &playback) {
+                    self.open(id, &playback, false, terminal.size()?.into());
+                }
+            }
+            Effect::OpenDirect(id, playback) => self.open(id, &playback, false, terminal.size()?.into()),
             Effect::Reopen(id, mut playback) => {
                 let Some(player) = self.players.get(&id) else { return Ok(()) };
                 let info = player.info();
                 playback.start = info.position.filter(|p| p.is_finite() && *p > 1.0).map(|p| p as u32);
                 let with_cookies = player.used_cookies();
                 self.stop(id);
-                self.open(id, &playback, with_cookies, terminal.size()?.into());
+                if !self.resolve_live(id, &playback) {
+                    self.open(id, &playback, with_cookies, terminal.size()?.into());
+                }
             }
             Effect::Close(id) => self.stop(id),
             Effect::Command(id, command) => {
@@ -831,6 +838,24 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// A live YouTube stream plays better through streamlink than through
+    /// yt-dlp. Asks it for the address in a thread (it takes a few seconds) and
+    /// answers with `Action::LiveSource`. False when this playback is not that case.
+    fn resolve_live(&self, id: TabId, playback: &Playback) -> bool {
+        let Some(video) = playback.video.as_ref().filter(|v| v.live == Live::Now) else { return false };
+        if playback.queue != [video.url()] {
+            return false;
+        }
+        let Some(streamlink) = tubetui::doctor::find("streamlink") else { return false };
+        let (url, max_height) = (video.url(), self.state.config.player.max_height);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let source = player::streamlink_url(&streamlink, &url, max_height);
+            let _ = tx.send(Action::LiveSource(id, source));
+        });
+        true
     }
 
     /// Starts mpv for a tab. Videos open without the login: yt-dlp takes

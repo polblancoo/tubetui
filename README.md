@@ -117,6 +117,10 @@ Every video opens in its own tab.
   also found where winget, scoop or the mpv installer leave them)
 - For embedded video: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal
 - Optional: [`streamlink`](https://streamlink.github.io) plays live streams (🔴) instead of yt-dlp; without it yt-dlp does
+- Optional: [`vot-cli`](https://github.com/FOSWLY/vot-cli) for voice translation (key `T`: off → English → Russian →
+  off). It mixes the translated voice over the video, with the original sound low. It uses Yandex's unofficial
+  service, which only speaks English, Russian and Kazakh; it does not work on live streams. Use the binary from its
+  releases page
 - Optional: `wmctrl` (X11) for window fullscreen
 
 tubetui checks this itself: when something needed is missing (or yt-dlp is

@@ -100,8 +100,27 @@ pub const IN_TAB: &[(&str, Text)] = &[
     ("[ ]", Text::new("capítulo anterior / siguiente", "previous / next chapter")),
     ("↑ ↓  m", Text::new("subir / bajar volumen · silenciar", "volume up / down · mute")),
     ("j", Text::new("subtítulos sí / no", "subtitles on / off")),
-    ("i", Text::new("modo: subtítulos → original → doblado", "mode: subtitles → original → dubbed")),
-    ("o", Text::new("otro idioma (es → en → pt …)", "another language (es → en → pt …)")),
+    (
+        "i",
+        Text::new(
+            "doblaje: subtítulos → original → doblado",
+            "dubbing: subtitles → original → dubbed",
+        ),
+    ),
+    (
+        "o",
+        Text::new(
+            "idioma de doblaje y subtítulos (es → en …)",
+            "dub and subtitles language (es → en …)",
+        ),
+    ),
+    (
+        "T",
+        Text::new(
+            "voz traducida: no → inglés → ruso",
+            "voice-over: off → English → Russian",
+        ),
+    ),
     (". ,", Text::new("música: siguiente / anterior", "music: next / previous")),
     ("Tab", Text::new("videos relacionados (en ventana)", "related videos (in a window)")),
     ("PgUp PgDn", Text::new("recorrer los comentarios (en ventana)", "scroll the comments (in a window)")),
@@ -208,6 +227,7 @@ fn player(code: KeyCode) -> Option<Action> {
         KeyCode::Char('j') => Some(Action::CycleSubtitles),
         KeyCode::Char('i') => Some(Action::CycleLanguage),
         KeyCode::Char('o') => Some(Action::CycleSubLang),
+        KeyCode::Char('T') => Some(Action::CycleVoice),
         KeyCode::Char('v') => Some(Action::CycleQuality),
         KeyCode::Char('b') => Some(Action::CycleCodec),
         KeyCode::Char('.') => Some(Action::NextTrack),
@@ -390,6 +410,7 @@ mod tests {
         assert_eq!(map(char('j'), TAB), Some(Action::CycleSubtitles));
         assert_eq!(map(char('i'), TAB), Some(Action::CycleLanguage));
         assert_eq!(map(char('o'), TAB), Some(Action::CycleSubLang));
+        assert_eq!(map(char('T'), TAB), Some(Action::CycleVoice));
         assert_eq!(map(char('v'), TAB), Some(Action::CycleQuality));
         assert_eq!(map(char(' '), LISTS), Some(Action::ToggleMark));
         assert_eq!(map(char('x'), LISTS), Some(Action::Trash));

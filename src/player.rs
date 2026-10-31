@@ -411,6 +411,53 @@ pub fn command_lines(
     }
 }
 
+/// mpv commands that mix a translated voice over the video (the original
+/// sound low) or, with `None`, give the original sound back.
+pub fn voice_lines(url: Option<&str>) -> Vec<String> {
+    match url {
+        Some(url) => vec![
+            json!({ "command": ["audio-add", url, "select", "voz"] }).to_string(),
+            set_property(
+                "lavfi-complex",
+                "[aid1]volume=0.15[o];[aid2]volume=1.0[v];[o][v]amix=inputs=2:duration=first:normalize=0[ao]".into(),
+            )
+            .to_string(),
+        ],
+        None => vec![set_property("lavfi-complex", "".into()).to_string(), set_property("aid", 1.into()).to_string()],
+    }
+}
+
+/// The address `vot-cli --preview` prints for a translated voice.
+pub fn parse_voice_url(output: &str) -> Option<String> {
+    output.lines().map(str::trim).find(|l| l.starts_with("http")).map(str::to_owned)
+}
+
+/// Asks vot-cli for the translated voice of `url`; the error says what to do.
+pub fn translate_voice(vot: &std::path::Path, url: &str, lang: &str, english: bool) -> Result<String, String> {
+    let pick = |es: &str, en: &str| if english { en.to_owned() } else { es.to_owned() };
+    let mut child = Command::new(vot)
+        .args(["--preview", "--no-visual", "--lang=auto", &format!("--reslang={lang}"), url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("vot-cli: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(pick("La traducción tardó demasiado", "The translation took too long"));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+    }
+    parse_voice_url(&out).ok_or_else(|| pick("No hay traducción para este video", "No translation for this video"))
+}
+
 fn set_property(name: &str, value: Value) -> Value {
     json!({ "command": ["set_property", name, value] })
 }
@@ -578,6 +625,13 @@ impl Player {
     /// Whether [`Player::info`] changed since the last call.
     pub fn info_changed(&self) -> bool {
         self.observed.changed.swap(false, Ordering::Relaxed)
+    }
+
+    /// Mixes the translated voice over the video, or takes it off (`None`).
+    pub fn voice(&mut self, url: Option<&str>) {
+        for line in voice_lines(url) {
+            self.write(&line);
+        }
     }
 
     pub fn send(&mut self, command: PlayerCommand) {
@@ -827,6 +881,18 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn voice_is_mixed_in_and_taken_off() {
+        let on = voice_lines(Some("https://x/v.mp3"));
+        assert!(on[0].contains(r#""audio-add","https://x/v.mp3","select""#), "{on:?}");
+        assert!(on[1].contains("lavfi-complex") && on[1].contains("amix"));
+        let off = voice_lines(None);
+        assert!(off[0].contains(r#""lavfi-complex",""]"#) || off[0].contains(r#""lavfi-complex",""#), "{off:?}");
+        assert!(off[1].contains(r#""aid",1"#));
+        assert_eq!(parse_voice_url("progress\nhttps://v/x.mp3?sig=1\n").as_deref(), Some("https://v/x.mp3?sig=1"));
+        assert_eq!(parse_voice_url("error: nope"), None);
+    }
+
     #[test]
     fn streamlink_prints_one_address() {
         assert_eq!(parse_stream_url("https://x/live.m3u8\n").as_deref(), Some("https://x/live.m3u8"));

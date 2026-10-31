@@ -826,6 +826,23 @@ impl Runtime {
                 }
             }
             Effect::Close(id) => self.stop(id),
+            Effect::Voice(id, url) => {
+                if let Some(p) = self.players.get_mut(&id) {
+                    p.voice(url.as_deref());
+                }
+            }
+            Effect::Translate { tab, url, lang } => {
+                let english = self.state.lang() == Lang::En;
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let result = match tubetui::doctor::find("vot-cli") {
+                        Some(vot) => player::translate_voice(&vot, &url, lang, english),
+                        None if english => Err("Needs vot-cli: github.com/FOSWLY/vot-cli/releases".into()),
+                        None => Err("Falta vot-cli: github.com/FOSWLY/vot-cli/releases".into()),
+                    };
+                    let _ = tx.send(Action::Translated(tab, lang, result));
+                });
+            }
             Effect::Command(id, command) => {
                 if let PlayerCommand::Fullscreen(on) = command
                     && self.mode().in_pane()

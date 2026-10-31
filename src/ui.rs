@@ -455,7 +455,7 @@ pub fn draw(frame: &mut Frame, state: &State, view: &View) {
             };
             let mut block = panel(title, blue());
             if let Some(info) = &view.playing {
-                block = block.title_top(Line::from(playing_label(info, icons, dubbed_wanted(state), lang)).fg(cyan()).right_aligned());
+                block = block.title_top(Line::from(playing_label(info, icons, dubbed_wanted(state), tab.voice, lang)).fg(cyan()).right_aligned());
                 if let Some(progress) = progress_line(info, &tab.segments, areas.content.width) {
                     block = block.title_bottom(progress);
                 }
@@ -631,7 +631,7 @@ fn dubbed_wanted(state: &State) -> Option<&str> {
 
 /// `" 🔊 85 %  720p  H.264  ES "`: what the video keys change, as it is now.
 /// In dubbed mode, says when YouTube has no dub in `wanted` and the original plays.
-fn playing_label(info: &Info, icons: &Icons, wanted: Option<&str>, lang: Lang) -> String {
+fn playing_label(info: &Info, icons: &Icons, wanted: Option<&str>, voice: Option<&str>, lang: Lang) -> String {
     let mut parts = Vec::new();
     if let Some(title) = info.chapter_title() {
         parts.push(format!("§ {}", truncate(title, 32)));
@@ -655,6 +655,9 @@ fn playing_label(info: &Info, icons: &Icons, wanted: Option<&str>, lang: Lang) -
             Some(w) => format!("{} · {} {w}", audio.to_uppercase(), lang.pick("sin doblaje en", "no dub in")),
             None => audio.to_uppercase(),
         });
+    }
+    if let Some(voice) = voice {
+        parts.push(format!("🗣 {}", voice.to_uppercase()));
     }
     if parts.is_empty() { String::new() } else { format!(" {} ", parts.join("  ")) }
 }
@@ -2562,14 +2565,16 @@ mod tests {
         let screen = render_with(&s, &View { playing: Some(info.clone()), ..VIEW });
         assert!(screen.contains("♪ 85 %  480p  H.264"), "{screen}");
         let muted = Info { muted: true, codec: Some("vp9".into()), ..info };
-        assert_eq!(playing_label(&muted, icons(IconSet::Unicode), None, Lang::Es), " ✕ 85 %  480p  VP9 ");
-        assert_eq!(playing_label(&Info::default(), icons(IconSet::Unicode), None, Lang::Es), "");
+        assert_eq!(playing_label(&muted, icons(IconSet::Unicode), None, None, Lang::Es), " ✕ 85 %  480p  VP9 ");
+        assert_eq!(playing_label(&Info::default(), icons(IconSet::Unicode), None, None, Lang::Es), "");
         let dub = Info { audio_lang: Some("en".into()), ..Info::default() };
-        let label = |wanted, lang| playing_label(&dub, icons(IconSet::Unicode), wanted, lang);
+        let label = |wanted, lang| playing_label(&dub, icons(IconSet::Unicode), wanted, None, lang);
         assert_eq!(label(None, Lang::Es), " EN ");
         assert_eq!(label(Some("en"), Lang::Es), " EN ", "the dub is there");
         assert_eq!(label(Some("es"), Lang::Es), " EN · sin doblaje en es ");
         assert_eq!(label(Some("es"), Lang::En), " EN · no dub in es ");
+        let voice = playing_label(&dub, icons(IconSet::Unicode), None, Some("ru"), Lang::Es);
+        assert_eq!(voice, " EN  🗣 RU ");
     }
 
     #[test]
@@ -2618,7 +2623,7 @@ mod tests {
             line.spans.iter().filter(|s| s.style.fg == Some(green())).map(|s| s.content.chars().count()).sum();
         assert!(green >= 2, "{line:?}");
         assert_eq!(track.matches('┃').count(), 1, "only the chapter that starts after 0: {track}");
-        assert!(playing_label(&info, icons(IconSet::Unicode), None, Lang::Es).contains("§ Second half"));
+        assert!(playing_label(&info, icons(IconSet::Unicode), None, None, Lang::Es).contains("§ Second half"));
     }
 
     /// The first cell whose row contains `text`, at the start of `text`.

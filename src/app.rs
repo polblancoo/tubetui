@@ -613,6 +613,10 @@ pub enum Action {
     CycleLanguage,
     /// Next subtitle / dubbing language (es → en → pt …) for this and later videos.
     CycleSubLang,
+    /// Voice translation of the video (vot-cli): off → English → Russian → off.
+    CycleVoice,
+    /// vot-cli's answer for a tab: the address of the translated voice, or why not.
+    Translated(TabId, &'static str, Result<String, String>),
     /// Next maximum height (360p → 480p → …) for this and later videos.
     CycleQuality,
     /// Next preferred video codec (H.264 → VP9 → AV1 → any) for this and later videos.
@@ -778,6 +782,10 @@ pub enum Effect {
     Reopen(TabId, Playback),
     Close(TabId),
     Command(TabId, PlayerCommand),
+    /// Ask vot-cli for the translated voice of a video (`lang` is `en` or `ru`).
+    Translate { tab: TabId, url: String, lang: &'static str },
+    /// Mix the translated voice at that address over the video, or take it off.
+    Voice(TabId, Option<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -867,6 +875,10 @@ pub struct Tab {
     pub comments_from: usize,
     /// Its player is gone, but the details and "up next" stay; Enter plays again.
     pub ended: bool,
+    /// Language of the translated voice playing over it.
+    pub voice: Option<&'static str>,
+    /// vot-cli is working on one.
+    pub translating: bool,
 }
 
 impl Tab {
@@ -882,6 +894,8 @@ impl Tab {
             comments: None,
             comments_from: 0,
             ended: false,
+            voice: None,
+            translating: false,
         }
     }
 
@@ -1587,6 +1601,25 @@ impl State {
                 }];
                 effects.extend(self.command(PlayerCommand::Language(language)));
                 return effects;
+            }
+            Action::CycleVoice => return self.cycle_voice(),
+            Action::Translated(id, lang, result) => {
+                let ui_lang = self.lang();
+                let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return Vec::new() };
+                tab.translating = false;
+                match result {
+                    Ok(url) => {
+                        tab.voice = Some(lang);
+                        self.status = format!(
+                            "{} {}  ·  T: {}",
+                            ui_lang.pick("🗣 Voz traducida:", "🗣 Translated voice:"),
+                            voice_name(lang, ui_lang),
+                            ui_lang.pick("cambiar o quitar", "change or turn off")
+                        );
+                        return vec![Effect::Voice(id, Some(url))];
+                    }
+                    Err(why) => self.status = why,
+                }
             }
             Action::CycleSubLang => {
                 let code = next_language(&self.config.player.sub_lang);
@@ -3243,7 +3276,61 @@ impl State {
         vec![Effect::SaveSetting { table: "ui", key: "lang", value: SettingValue::Text(lang.as_str().into()) }]
     }
 
-    fn command(&self, command: PlayerCommand) -> Vec<Effect> {
+    /// `T`: the next voice translation for the active video, or none.
+    fn cycle_voice(&mut self) -> Vec<Effect> {
+        let lang = self.lang();
+        let Some((id, video, translating, voice)) =
+            self.active_tab().map(|t| (t.id, t.playback.video.clone(), t.translating, t.voice))
+        else {
+            return Vec::new();
+        };
+        let Some(video) = video else {
+            self.status =
+                lang.pick("Solo los videos de YouTube se traducen", "Only YouTube videos can be translated").into();
+            return Vec::new();
+        };
+        if video.live != crate::domain::Live::No {
+            self.status = lang.pick("Un directo no se puede traducir", "A live stream can't be translated").into();
+            return Vec::new();
+        }
+        if translating {
+            self.status = lang.pick("Ya se está traduciendo…", "Already translating…").into();
+            return Vec::new();
+        }
+        let next = match voice {
+            None => Some("en"),
+            Some("en") => Some("ru"),
+            Some(_) => None,
+        };
+        if let Some(tab) = self.active_tab_mut() {
+            tab.voice = None;
+            tab.translating = next.is_some();
+        }
+        match next {
+            Some(code) => {
+                self.status = format!(
+                    "{} {}…",
+                    lang.pick("🗣 Traduciendo la voz al", "🗣 Translating the voice to"),
+                    voice_name(code, lang)
+                );
+                vec![Effect::Voice(id, None), Effect::Translate { tab: id, url: video.url(), lang: code }]
+            }
+            None => {
+                self.status = lang.pick("Voz traducida quitada", "Translated voice off").into();
+                vec![Effect::Voice(id, None)]
+            }
+        }
+    }
+
+    fn command(&mut self, command: PlayerCommand) -> Vec<Effect> {
+        // Reloading the video drops the voice that was added to it.
+        if matches!(
+            command,
+            PlayerCommand::Language(_) | PlayerCommand::SubLang(_) | PlayerCommand::Quality(_) | PlayerCommand::Codec(_)
+        ) && let Some(tab) = self.active_tab_mut()
+        {
+            tab.voice = None;
+        }
         self.active_tab().map(|t| Effect::Command(t.id, command)).into_iter().collect()
     }
 }
@@ -3282,6 +3369,14 @@ fn effect_flag(effects: &mut EffectsConfig, setting: Setting) -> Option<(&'stati
 /// "sí"/"no" in both languages.
 fn on_off(on: bool) -> (&'static str, &'static str) {
     if on { ("sí", "on") } else { ("no", "off") }
+}
+
+/// The language a voice translation goes to.
+pub fn voice_name(code: &str, lang: Lang) -> &'static str {
+    match code {
+        "ru" => lang.pick("ruso", "Russian"),
+        _ => lang.pick("inglés", "English"),
+    }
 }
 
 pub fn language_label(language: Language, lang: Lang) -> &'static str {
@@ -4663,6 +4758,27 @@ mod tests {
         s.update(Action::OpenSection(settings));
         assert_eq!((s.menu, s.listing().unwrap().items.clone()), (settings, Items::Settings));
         assert!(s.update(Action::OpenSection(99)).is_empty());
+    }
+
+    #[test]
+    fn voice_cycles_english_russian_off_and_waits_for_vot_cli() {
+        let mut s = with_videos(&["a"]);
+        let id = play(&mut s, 0);
+        let fx = s.update(Action::CycleVoice);
+        assert!(matches!(fx.as_slice(), [Effect::Voice(_, None), Effect::Translate { lang: "en", .. }]), "{fx:?}");
+        assert!(s.update(Action::CycleVoice).is_empty(), "still working");
+        let fx = s.update(Action::Translated(id, "en", Ok("https://v/x.mp3".into())));
+        assert_eq!(fx, [Effect::Voice(id, Some("https://v/x.mp3".into()))]);
+        assert_eq!(s.active_tab().unwrap().voice, Some("en"));
+        let fx = s.update(Action::CycleVoice);
+        assert!(matches!(fx.as_slice(), [_, Effect::Translate { lang: "ru", .. }]));
+        s.update(Action::Translated(id, "ru", Err("Falta vot-cli".into())));
+        assert_eq!((s.active_tab().unwrap().voice, s.status.as_str()), (None, "Falta vot-cli"));
+        s.update(Action::CycleVoice);
+        s.update(Action::Translated(id, "en", Ok("u".into())));
+        s.update(Action::CycleVoice);
+        s.update(Action::Translated(id, "ru", Ok("u".into())));
+        assert_eq!(s.update(Action::CycleVoice), [Effect::Voice(id, None)], "ru → off");
     }
 
     #[test]

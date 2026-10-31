@@ -14,7 +14,7 @@ use ratatui::widgets::{
 use crate::app::{
     Confirm, ContextMenu, Focus, Group, ListKind, Listing, Prompt, Section, Setting, State, Tab, language_label,
 };
-use crate::config::{IconSet, donations};
+use crate::config::{IconSet, Language, donations};
 use crate::doctor::{Manager, Tool};
 use crate::domain::{Channel, Download, DownloadState, Live, Playlist, Size, Video, bytes_label, clock, date_labels};
 use crate::i18n::Lang;
@@ -455,7 +455,7 @@ pub fn draw(frame: &mut Frame, state: &State, view: &View) {
             };
             let mut block = panel(title, blue());
             if let Some(info) = &view.playing {
-                block = block.title_top(Line::from(playing_label(info, icons)).fg(cyan()).right_aligned());
+                block = block.title_top(Line::from(playing_label(info, icons, dubbed_wanted(state), lang)).fg(cyan()).right_aligned());
                 if let Some(progress) = progress_line(info, &tab.segments, areas.content.width) {
                     block = block.title_bottom(progress);
                 }
@@ -623,8 +623,15 @@ fn tab_icon<'a>(icons: &'a Icons, tab: &Tab) -> &'a str {
     if tab.playback.audio_only { icons.section(Section::MiMusica) } else { icons.tab }
 }
 
-/// `" 🔊 85 %  720p  H.264 "`: what the video keys change, as it is now.
-fn playing_label(info: &Info, icons: &Icons) -> String {
+/// The dubbing language the player is asked for, in dubbed mode.
+fn dubbed_wanted(state: &State) -> Option<&str> {
+    let player = &state.config.player;
+    (player.language == Language::Dubbed).then_some(player.sub_lang.as_str())
+}
+
+/// `" 🔊 85 %  720p  H.264  ES "`: what the video keys change, as it is now.
+/// In dubbed mode, says when YouTube has no dub in `wanted` and the original plays.
+fn playing_label(info: &Info, icons: &Icons, wanted: Option<&str>, lang: Lang) -> String {
     let mut parts = Vec::new();
     if let Some(title) = info.chapter_title() {
         parts.push(format!("§ {}", truncate(title, 32)));
@@ -641,6 +648,12 @@ fn playing_label(info: &Info, icons: &Icons) -> String {
             "h264" => "H.264".into(),
             "hevc" => "H.265".into(),
             other => other.to_uppercase(),
+        });
+    }
+    if let Some(audio) = &info.audio_lang {
+        parts.push(match wanted.filter(|w| !audio.starts_with(*w)) {
+            Some(w) => format!("{} · {} {w}", audio.to_uppercase(), lang.pick("sin doblaje en", "no dub in")),
+            None => audio.to_uppercase(),
         });
     }
     if parts.is_empty() { String::new() } else { format!(" {} ", parts.join("  ")) }
@@ -2549,8 +2562,14 @@ mod tests {
         let screen = render_with(&s, &View { playing: Some(info.clone()), ..VIEW });
         assert!(screen.contains("♪ 85 %  480p  H.264"), "{screen}");
         let muted = Info { muted: true, codec: Some("vp9".into()), ..info };
-        assert_eq!(playing_label(&muted, icons(IconSet::Unicode)), " ✕ 85 %  480p  VP9 ");
-        assert_eq!(playing_label(&Info::default(), icons(IconSet::Unicode)), "");
+        assert_eq!(playing_label(&muted, icons(IconSet::Unicode), None, Lang::Es), " ✕ 85 %  480p  VP9 ");
+        assert_eq!(playing_label(&Info::default(), icons(IconSet::Unicode), None, Lang::Es), "");
+        let dub = Info { audio_lang: Some("en".into()), ..Info::default() };
+        let label = |wanted, lang| playing_label(&dub, icons(IconSet::Unicode), wanted, lang);
+        assert_eq!(label(None, Lang::Es), " EN ");
+        assert_eq!(label(Some("en"), Lang::Es), " EN ", "the dub is there");
+        assert_eq!(label(Some("es"), Lang::Es), " EN · sin doblaje en es ");
+        assert_eq!(label(Some("es"), Lang::En), " EN · no dub in es ");
     }
 
     #[test]
@@ -2599,7 +2618,7 @@ mod tests {
             line.spans.iter().filter(|s| s.style.fg == Some(green())).map(|s| s.content.chars().count()).sum();
         assert!(green >= 2, "{line:?}");
         assert_eq!(track.matches('┃').count(), 1, "only the chapter that starts after 0: {track}");
-        assert!(playing_label(&info, icons(IconSet::Unicode)).contains("§ Second half"));
+        assert!(playing_label(&info, icons(IconSet::Unicode), None, Lang::Es).contains("§ Second half"));
     }
 
     /// The first cell whose row contains `text`, at the start of `text`.

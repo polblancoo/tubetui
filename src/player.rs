@@ -424,6 +424,8 @@ pub struct Info {
     pub height: Option<i64>,
     /// mpv's codec name: `h264`, `vp9`, `av1` …
     pub codec: Option<String>,
+    /// Language of the audio track playing (`en`, `es` …), when the video says.
+    pub audio_lang: Option<String>,
     /// Seconds played and in total.
     pub position: Option<f64>,
     pub duration: Option<f64>,
@@ -444,11 +446,12 @@ impl Info {
 }
 
 /// Properties mpv reports to [`Info`] whenever they change.
-const OBSERVED: [&str; 10] = [
+const OBSERVED: [&str; 11] = [
     "volume",
     "mute",
     "height",
     "video-format",
+    "current-tracks/audio/lang",
     "time-pos",
     "duration",
     "pause",
@@ -467,6 +470,7 @@ impl Info {
             "mute" => self.muted = data.as_bool().unwrap_or(false),
             "height" => self.height = data.as_i64(),
             "video-format" => self.codec = data.as_str().map(str::to_owned),
+            "current-tracks/audio/lang" => self.audio_lang = data.as_str().map(str::to_owned),
             "time-pos" => self.position = data.as_f64(),
             "duration" => self.duration = data.as_f64(),
             "pause" => self.paused = data.as_bool().unwrap_or(false),
@@ -848,6 +852,7 @@ mod tests {
         info.apply("mute", &json!(true));
         info.apply("height", &json!(480));
         info.apply("video-format", &json!("h264"));
+        assert!(info.apply("current-tracks/audio/lang", &json!("es")));
         info.apply("duration", &json!(300.5));
         assert!(info.apply("time-pos", &json!(3.0)));
         assert!(!info.apply("time-pos", &json!(3.4)), "same second: nothing to redraw");
@@ -867,6 +872,7 @@ mod tests {
                 muted: true,
                 height: Some(480),
                 codec: Some("h264".into()),
+                audio_lang: Some("es".into()),
                 position: Some(4.1),
                 duration: Some(300.5),
                 buffered: Some(60.7),

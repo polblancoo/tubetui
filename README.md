@@ -15,7 +15,9 @@ Every video opens in its own tab.
 
 ![Search results with the preview panel and the selected video's thumbnail](https://raw.githubusercontent.com/polblancoo/tubetui/main/docs/preview.png)
 
-![A YouTube video playing inside tubetui, in kitty](https://raw.githubusercontent.com/polblancoo/tubetui/main/docs/video.png)
+![A YouTube video playing inside tubetui, in kitty, with its voice translated](https://raw.githubusercontent.com/polblancoo/tubetui/main/docs/video.png)
+
+![The keyboard shortcuts help, with the video tab's keys](https://raw.githubusercontent.com/polblancoo/tubetui/main/docs/help.png)
 
 ## What it does
 
@@ -76,7 +78,13 @@ Every video opens in its own tab.
   back to browsing
 - Volume, mute, seek, **subtitles on/off**, switch **original / subtitles /
   auto-dubbed audio** and the **language** while watching (the video reloads at
-  the same second)
+  the same second); the video's bar shows the audio language (`ES`, `EN` …) and
+  says when YouTube has no dub in yours
+- **Live streams** (🔴): played through [streamlink](https://streamlink.github.io)
+  when it is installed, yt-dlp otherwise
+- **Voice translation** (`T`): the video's voice in English or Russian over the
+  original sound, from [vot-cli](https://github.com/FOSWLY/vot-cli) (see
+  Requirements)
 - **Fullscreen** (`f`): the video fills the terminal, and on X11 the terminal
   window goes fullscreen too
 - **Audio only** (`a`): play a video as sound only, like music; inside its
@@ -195,7 +203,7 @@ and **My music**: `space` marks files, `x` / `Del` moves the marked ones (or
 the selected one) to the system trash, after asking. `o` sorts the files by
 folder, name or size (largest first).
 While watching: `space` pause, `←→` seek, `↑↓` volume, `m` mute, `j`
-subtitles, `i` original / subtitles / dubbed, `o` language, `v` quality
+subtitles, `i` original / subtitles / dubbed, `o` language, `T` voice translation, `v` quality
 (360p–1440p), `b` codec (H.264 / VP9 / AV1 / any), `f` fullscreen, `.` `,`
 next / previous song, `[` `]` previous / next chapter, `a` audio only ⇄ video,
 `PgUp` `PgDn` scroll the comments. Quality, codec and language reload the video at the

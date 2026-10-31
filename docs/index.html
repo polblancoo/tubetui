@@ -133,6 +133,7 @@
       <span lang="en">Free and open source · AGPL-3.0 · Linux, Windows and macOS</span>
     </p>
     <img class="shot" src="preview.png" alt="tubetui: búsqueda con vista previa y portada">
+    <img class="shot" src="video.png" alt="tubetui: un video integrado en kitty, con la voz traducida">
   </div>
 
   <section id="descargas">
@@ -235,6 +236,12 @@
         <div class="feature"><div class="icon">🔐</div>
           <h3><span lang="es">Tu sesión, sin contraseñas</span><span lang="en">Your login, no passwords</span></h3>
           <p><span lang="es">Toma la sesión de tu navegador (Brave, Chrome, Firefox, Edge… también snap y flatpak) o de un cookies.txt.</span><span lang="en">Uses your browser's login (Brave, Chrome, Firefox, Edge… snap and flatpak too) or a cookies.txt.</span></p></div>
+        <div class="feature"><div class="icon">🔴</div>
+          <h3><span lang="es">Directos</span><span lang="en">Live streams</span></h3>
+          <p><span lang="es">Los directos se ven con streamlink si lo tenés instalado, y con yt-dlp si no.</span><span lang="en">Live streams play through streamlink when it is installed, and through yt-dlp when it is not.</span></p></div>
+        <div class="feature"><div class="icon">🗣</div>
+          <h3><span lang="es">Voz traducida</span><span lang="en">Voice translation</span></h3>
+          <p><span lang="es">Una tecla (<kbd>T</kbd>) pone la voz del video en inglés o ruso sobre el sonido original, con vot-cli. La barra muestra el idioma del audio y avisa si no hay doblaje en el tuyo.</span><span lang="en">One key (<kbd>T</kbd>) puts the video's voice in English or Russian over the original sound, with vot-cli. The bar shows the audio language and says when there is no dub in yours.</span></p></div>
         <div class="feature"><div class="icon">📼</div>
           <h3><span lang="es">Tus archivos</span><span lang="en">Your files</span></h3>
           <p><span lang="es">Tus videos y tu música locales, con cola de reproducción. Marcá varios y mandalos a la papelera.</span><span lang="en">Your local videos and music, with a play queue. Mark several and send them to the trash.</span></p></div>
@@ -297,6 +304,7 @@ cargo install tubetui</code></pre>
     <div class="wrap">
       <h2><span class="hash">#</span> <span lang="es">Atajos</span><span lang="en">Keys</span></h2>
       <p class="lead"><span lang="es">La línea de abajo de la app siempre muestra las teclas que sirven en ese momento; <kbd>Ctrl+y</kbd> <kbd>?</kbd> las muestra todas.</span><span lang="en">The app's bottom line always shows the keys that work right now; <kbd>Ctrl+y</kbd> <kbd>?</kbd> shows them all.</span></p>
+      <img class="shot" src="help.png" alt="tubetui: la ayuda con todos los atajos" style="margin:0 auto 32px">
       <div class="keys">
         <div>
           <h3><span lang="es">Listas</span><span lang="en">Lists</span></h3>
@@ -319,6 +327,7 @@ cargo install tubetui</code></pre>
             <tr><td><kbd>←→</kbd> <kbd>↑↓</kbd></td><td><span lang="es">±5 s · volumen</span><span lang="en">±5 s · volume</span></td></tr>
             <tr><td><kbd>v</kbd> <kbd>b</kbd></td><td><span lang="es">calidad · compresión</span><span lang="en">quality · codec</span></td></tr>
             <tr><td><kbd>j</kbd> <kbd>i</kbd> <kbd>o</kbd></td><td><span lang="es">subtítulos · original/doblado · idioma</span><span lang="en">subtitles · original/dubbed · language</span></td></tr>
+            <tr><td><kbd>T</kbd></td><td><span lang="es">voz traducida: no → inglés → ruso</span><span lang="en">voice-over: off → English → Russian</span></td></tr>
             <tr><td><kbd>f</kbd> <kbd>Tab</kbd></td><td><span lang="es">pantalla completa · A continuación</span><span lang="en">fullscreen · Up next</span></td></tr>
             <tr><td><kbd>[</kbd> <kbd>]</kbd> <kbd>a</kbd></td><td><span lang="es">capítulo anterior · siguiente · solo audio</span><span lang="en">previous · next chapter · audio only</span></td></tr>
             <tr><td><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td><span lang="es">comentarios</span><span lang="en">comments</span></td></tr>

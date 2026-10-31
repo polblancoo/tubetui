@@ -233,6 +233,26 @@ pub const LANGUAGES: [(&str, Text); 9] = [
     ("ru", Text::new("ruso", "Russian")),
 ];
 
+/// Whether an audio track's language (mpv says `eng`, `spa`, or `en-US`
+/// as YouTube spells it) is the 2-letter `code` of [`LANGUAGES`].
+pub fn same_language(track: &str, code: &str) -> bool {
+    // `en-US` is English too: only what comes before the dash counts.
+    let track = track.split(['-', '_']).next().unwrap_or_default().to_ascii_lowercase();
+    let three: &[&str] = match code {
+        "es" => &["spa"],
+        "en" => &["eng"],
+        "pt" => &["por"],
+        "fr" => &["fra", "fre"],
+        "it" => &["ita"],
+        "de" => &["deu", "ger"],
+        "ja" => &["jpn"],
+        "ko" => &["kor"],
+        "ru" => &["rus"],
+        _ => &[],
+    };
+    track == code || three.contains(&track.as_str())
+}
+
 pub fn next_language(code: &str) -> &'static str {
     let index = LANGUAGES.iter().position(|(c, _)| *c == code).map_or(0, |i| (i + 1) % LANGUAGES.len());
     LANGUAGES[index].0
@@ -443,6 +463,15 @@ mod tests {
         assert_eq!(parse_donations(""), vec![]);
         donations(); // the shipped file parses
         assert!(toml::from_str::<toml::Table>(include_str!("../donate.toml")).is_ok());
+    }
+
+    #[test]
+    fn tracks_match_their_language_in_two_or_three_letters() {
+        assert!(same_language("es", "es") && same_language("es-US", "es") && same_language("spa", "es"));
+        assert!(same_language("eng", "en") && same_language("en-US", "en") && same_language("ENG", "en"));
+        assert!(same_language("fre", "fr") && same_language("fra", "fr") && same_language("deu", "de"));
+        assert!(!same_language("eng", "es") && !same_language("spa", "en") && !same_language("est", "es"));
+        assert!(!same_language("und", "en"), "undetermined is not English");
     }
 
     #[test]

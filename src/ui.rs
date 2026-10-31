@@ -651,7 +651,7 @@ fn playing_label(info: &Info, icons: &Icons, wanted: Option<&str>, voice: Option
         });
     }
     if let Some(audio) = &info.audio_lang {
-        parts.push(match wanted.filter(|w| !audio.starts_with(*w)) {
+        parts.push(match wanted.filter(|w| !crate::config::same_language(audio, w)) {
             Some(w) => format!("{} · {} {w}", audio.to_uppercase(), lang.pick("sin doblaje en", "no dub in")),
             None => audio.to_uppercase(),
         });
@@ -2573,6 +2573,8 @@ mod tests {
         assert_eq!(label(Some("en"), Lang::Es), " EN ", "the dub is there");
         assert_eq!(label(Some("es"), Lang::Es), " EN · sin doblaje en es ");
         assert_eq!(label(Some("es"), Lang::En), " EN · no dub in es ");
+        let spanish = Info { audio_lang: Some("spa".into()), ..Info::default() };
+        assert_eq!(playing_label(&spanish, icons(IconSet::Unicode), Some("es"), None, Lang::Es), " SPA ");
         let voice = playing_label(&dub, icons(IconSet::Unicode), None, Some("ru"), Lang::Es);
         assert_eq!(voice, " EN  🗣 RU ");
     }

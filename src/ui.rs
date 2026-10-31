@@ -2027,7 +2027,7 @@ fn draw_about(frame: &mut Frame, state: &State, icons: &Icons, area: Rect) {
         Line::from(""),
         Line::from(vec![label("GitHub"), Span::styled(env!("CARGO_PKG_REPOSITORY"), cyan())]),
         Line::from(vec![label("crates.io"), Span::styled("https://crates.io/crates/tubetui", cyan())]),
-        Line::from(vec![label(lang.pick("Licencia", "License")), Span::styled("MIT / Apache-2.0", fg())]),
+        Line::from(vec![label(lang.pick("Licencia", "License")), Span::styled("AGPL-3.0", fg())]),
         Line::from(vec![
             label(lang.pick("Errores", "Bugs")),
             Span::styled(concat!(env!("CARGO_PKG_REPOSITORY"), "/issues"), cyan()),

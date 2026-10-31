@@ -308,5 +308,5 @@ risk. Cookies give access to your account: never share them.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT), at your option.
+Licensed under the [GNU Affero General Public License v3.0](LICENSE)
+(AGPL-3.0-only).

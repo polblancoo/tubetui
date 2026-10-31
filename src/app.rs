@@ -3309,9 +3309,10 @@ impl State {
         match next {
             Some(code) => {
                 self.status = format!(
-                    "{} {}…",
+                    "{} {}… {}",
                     lang.pick("🗣 Traduciendo la voz al", "🗣 Translating the voice to"),
-                    voice_name(code, lang)
+                    voice_name(code, lang),
+                    lang.pick("(la primera vez puede tardar unos minutos)", "(the first time can take a few minutes)")
                 );
                 vec![Effect::Voice(id, None), Effect::Translate { tab: id, url: video.url(), lang: code }]
             }

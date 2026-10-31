@@ -423,6 +423,7 @@ impl Runtime {
             pending.extend(self.rx.try_iter());
             self.state.clock = now();
             pending.extend(self.segments_to_skip());
+            pending.extend(self.voices_to_translate());
             self.poll_subs();
             self.ask_size();
             self.retry_with_cookies(terminal.size()?.into());
@@ -533,6 +534,22 @@ impl Runtime {
                 let position = self.players.get(&tab.id)?.info().position?;
                 let index = tubetui::sponsorblock::to_skip(&tab.segments, position, &tab.skipped)?;
                 Some(Action::SkipSegment(tab.id, index))
+            })
+            .collect()
+    }
+
+    /// Videos whose audio is not in the configured voice language, not
+    /// translated yet.
+    fn voices_to_translate(&self) -> Vec<Action> {
+        let wanted = self.state.config.player.voice.as_str();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        (self.state.tabs.iter().filter(|t| !t.voice_tried && !t.translating && t.voice.is_none()))
+            .filter_map(|tab| {
+                let audio = self.players.get(&tab.id)?.info().audio_lang;
+                let audio = audio.as_deref().filter(|a| !a.is_empty() && *a != "und")?;
+                (!tubetui::config::same_language(audio, wanted)).then_some(Action::AutoVoice(tab.id))
             })
             .collect()
     }

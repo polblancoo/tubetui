@@ -84,7 +84,8 @@ Every video opens in its own tab.
   when it is installed, yt-dlp otherwise
 - **Voice translation** (`T`): the video's voice in English or Russian over the
   original sound, from [vot-cli](https://github.com/FOSWLY/vot-cli) (see
-  Requirements)
+  Requirements). Set a default language (`voice = "ru"`, or Settings) and every
+  video whose audio is in another language is translated on its own
 - **Fullscreen** (`f`): the video fills the terminal, and on X11 the terminal
   window goes fullscreen too
 - **Audio only** (`a`): play a video as sound only, like music; inside its
@@ -125,8 +126,8 @@ Every video opens in its own tab.
   also found where winget, scoop or the mpv installer leave them)
 - For embedded video: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal
 - Optional: [`streamlink`](https://streamlink.github.io) plays live streams (🔴) instead of yt-dlp; without it yt-dlp does
-- Optional: [`vot-cli`](https://github.com/FOSWLY/vot-cli) for voice translation (key `T`: off → English → Russian →
-  off). It mixes the translated voice over the video, with the original sound low. It uses Yandex's unofficial
+- Optional: [`vot-cli`](https://github.com/FOSWLY/vot-cli) for voice translation (key `T`: your default language → the other one →
+  off; English first if none is set). It mixes the translated voice over the video, with the original sound low. It uses Yandex's unofficial
   service, which only speaks English, Russian and Kazakh; it does not work on live streams. Use the binary from its
   releases page
 - Optional: `wmctrl` (X11) for window fullscreen
@@ -269,6 +270,7 @@ language = "subtitles"   # subtitles | original | dubbed
 sub_lang = "es"          # subtitles and dubbing language
 background_audio = true  # keep listening while browsing
 sponsorblock = true      # skip sponsors, self promotion and "subscribe!" reminders
+voice = ""               # "ru" | "en": translate videos in other languages by itself (needs vot-cli)
 
 [media]
 video_dirs = ["~/Videos"]

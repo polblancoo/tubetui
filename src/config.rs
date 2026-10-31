@@ -70,6 +70,10 @@ pub struct PlayerConfig {
     pub background_audio: bool,
     /// Skip sponsors, self promotion and "subscribe!" reminders (SponsorBlock).
     pub sponsorblock: bool,
+    /// Voice translation language (`en` or `ru`, needs vot-cli): `T` starts with
+    /// it, and videos whose audio is in another language are translated on
+    /// their own. Empty: off.
+    pub voice: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -339,6 +343,7 @@ impl Default for PlayerConfig {
             sub_lang: "es".into(),
             background_audio: true,
             sponsorblock: true,
+            voice: String::new(),
         }
     }
 }

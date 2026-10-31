@@ -148,6 +148,7 @@ pub enum Setting {
     VideoMode,
     BackgroundAudio,
     SponsorBlock,
+    Voice,
     AppLang,
     Icons,
     Theme,
@@ -172,7 +173,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Browser,
         Self::ImportCookies,
         Self::Refresh,
@@ -183,6 +184,7 @@ impl Setting {
         Self::VideoMode,
         Self::BackgroundAudio,
         Self::SponsorBlock,
+        Self::Voice,
         Self::AppLang,
         Self::Icons,
         Self::Theme,
@@ -220,6 +222,7 @@ impl Setting {
             Self::VideoMode => ("Video", "Video"),
             Self::BackgroundAudio => ("Al salir de la pestaña del video", "When leaving the video tab"),
             Self::SponsorBlock => ("Saltar patrocinios (SponsorBlock)", "Skip sponsors (SponsorBlock)"),
+            Self::Voice => ("Traducir la voz solo a…", "Translate the voice automatically to…"),
             Self::AppLang => ("Idioma de la app (Ctrl+y + l)", "App language (Ctrl+y + l)"),
             Self::Icons => ("Íconos", "Icons"),
             Self::Theme => ("Tema de colores", "Colour theme"),
@@ -596,6 +599,9 @@ pub enum Action {
     SegmentsLoaded(TabId, Vec<Segment>),
     /// A tab's video reached this segment: jump over it.
     SkipSegment(TabId, usize),
+    /// A tab's video plays in another language than the configured voice:
+    /// translate it.
+    AutoVoice(TabId),
     /// The newest videos of my channels, checked in the background.
     SubsPolled(Result<Vec<Video>, String>),
     /// What a video weighs (and lasts), asked to yt-dlp in the background.
@@ -879,6 +885,8 @@ pub struct Tab {
     pub voice: Option<&'static str>,
     /// vot-cli is working on one.
     pub translating: bool,
+    /// The automatic translation was already tried (or declined with `T`).
+    pub voice_tried: bool,
 }
 
 impl Tab {
@@ -896,6 +904,7 @@ impl Tab {
             ended: false,
             voice: None,
             translating: false,
+            voice_tried: false,
         }
     }
 
@@ -1182,6 +1191,10 @@ impl State {
                 let (es, en) = on_off(player.sponsorblock);
                 self.tr(es, en).into()
             }
+            Setting::Voice => match player.voice.as_str() {
+                "" => self.tr("no (con T a mano)", "no (with T by hand)").into(),
+                code => voice_name(code, lang).into(),
+            },
             Setting::AppLang => lang.name().into(),
             Setting::Icons => self.config.ui.icons.as_str().into(),
             Setting::Theme => self.config.ui.theme.name().into(),
@@ -1603,6 +1616,7 @@ impl State {
                 return effects;
             }
             Action::CycleVoice => return self.cycle_voice(),
+            Action::AutoVoice(id) => return self.auto_voice(id),
             Action::Translated(id, lang, result) => {
                 let ui_lang = self.lang();
                 let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return Vec::new() };
@@ -1964,6 +1978,18 @@ impl State {
                 player.sponsorblock = !player.sponsorblock;
                 self.status = self.tr("Se aplica a los próximos videos", "Applies to the next videos").into();
                 save("player", "sponsorblock", SettingValue::Bool(self.config.player.sponsorblock))
+            }
+            Setting::Voice => {
+                player.voice = match player.voice.as_str() {
+                    "" => "ru",
+                    "ru" => "en",
+                    _ => "",
+                }
+                .into();
+                self.status = self
+                    .tr("Se aplica a los próximos videos (hace falta vot-cli)", "Applies to the next videos (needs vot-cli)")
+                    .into();
+                save("player", "voice", SettingValue::Text(self.config.player.voice.clone()))
             }
             Setting::AppLang => self.toggle_ui_lang(),
             Setting::Icons => {
@@ -3297,13 +3323,18 @@ impl State {
             self.status = lang.pick("Ya se está traduciendo…", "Already translating…").into();
             return Vec::new();
         }
+        // The configured language comes first, then the other one, then none.
+        let first = if self.config.player.voice == "en" { "en" } else { "ru" };
+        let first = if self.config.player.voice.is_empty() { "en" } else { first };
+        let second = if first == "en" { "ru" } else { "en" };
         let next = match voice {
-            None => Some("en"),
-            Some("en") => Some("ru"),
+            None => Some(first),
+            Some(v) if v == first => Some(second),
             Some(_) => None,
         };
         if let Some(tab) = self.active_tab_mut() {
             tab.voice = None;
+            tab.voice_tried = true;
             tab.translating = next.is_some();
         }
         match next {
@@ -3321,6 +3352,33 @@ impl State {
                 vec![Effect::Voice(id, None)]
             }
         }
+    }
+
+    /// The video of tab `id` plays in another language than the configured
+    /// voice: translate it, once.
+    fn auto_voice(&mut self, id: TabId) -> Vec<Effect> {
+        let lang = self.lang();
+        let code = match self.config.player.voice.as_str() {
+            "en" => "en",
+            "ru" => "ru",
+            _ => return Vec::new(),
+        };
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return Vec::new() };
+        let Some(video) = tab.playback.video.clone().filter(|v| v.live == crate::domain::Live::No) else {
+            return Vec::new();
+        };
+        if tab.voice_tried || tab.translating || tab.voice.is_some() {
+            return Vec::new();
+        }
+        tab.voice_tried = true;
+        tab.translating = true;
+        self.status = format!(
+            "{} {}… {}",
+            lang.pick("🗣 Traduciendo la voz al", "🗣 Translating the voice to"),
+            voice_name(code, lang),
+            lang.pick("(la primera vez puede tardar unos minutos)", "(the first time can take a few minutes)")
+        );
+        vec![Effect::Translate { tab: id, url: video.url(), lang: code }]
     }
 
     fn command(&mut self, command: PlayerCommand) -> Vec<Effect> {
@@ -4759,6 +4817,20 @@ mod tests {
         s.update(Action::OpenSection(settings));
         assert_eq!((s.menu, s.listing().unwrap().items.clone()), (settings, Items::Settings));
         assert!(s.update(Action::OpenSection(99)).is_empty());
+    }
+
+    #[test]
+    fn configured_voice_goes_first_and_translates_on_its_own() {
+        let mut s = with_videos(&["a"]);
+        let id = play(&mut s, 0);
+        assert!(s.update(Action::AutoVoice(id)).is_empty(), "off by default");
+        s.config.player.voice = "ru".into();
+        let fx = s.update(Action::AutoVoice(id));
+        assert!(matches!(fx.as_slice(), [Effect::Translate { lang: "ru", .. }]), "{fx:?}");
+        assert!(s.update(Action::AutoVoice(id)).is_empty(), "only once");
+        s.update(Action::Translated(id, "ru", Err("x".into())));
+        let fx = s.update(Action::CycleVoice);
+        assert!(matches!(fx.as_slice(), [_, Effect::Translate { lang: "ru", .. }]), "T starts with the default: {fx:?}");
     }
 
     #[test]

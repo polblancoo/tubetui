@@ -117,8 +117,8 @@ pub const IN_TAB: &[(&str, Text)] = &[
     (
         "T",
         Text::new(
-            "voz traducida: no → inglés → ruso",
-            "voice-over: off → English → Russian",
+            "voz traducida: tu idioma → otro → no",
+            "voice-over: yours → other → off",
         ),
     ),
     (". ,", Text::new("música: siguiente / anterior", "music: next / previous")),

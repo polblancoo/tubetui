@@ -50,7 +50,7 @@ Every video opens in its own tab.
 - **Search** videos in all of YouTube (about a second, more results load as
   you scroll), only in your channels, or inside a channel (`Tab` switches the
   scope); search channels (with their description, whole in the side panel)
-- A **preview** of the selected video with its **thumbnail** (in kitty), its
+- A **preview** of the selected video with its **thumbnail** (kitty, iTerm2/WezTerm and Sixel terminals such as foot; `TUBETUI_GRAPHICS=kitty|iterm2|sixel|none` forces one), its
   length and **what it weighs** to download at your quality
   (*💾 Download ≈ 84 MB (1080p)*), asked to yt-dlp once the selection rests
   on it
@@ -279,7 +279,7 @@ music_dirs = ["~/Música", "/mnt/discos"]
 [ui]
 icons = "emoji"          # emoji | nerd | unicode
 lang = "en"              # en | es (unset: the system language)
-thumbnails = true        # thumbnail in the preview panel (kitty)
+thumbnails = true        # thumbnail in the preview panel (kitty, iTerm2, Sixel)
 mouse = true             # clicks and wheel; hold Shift to select text
 splash = true            # the tubetui logo for a moment when it opens (any key skips it)
 check_updates = true     # once a day, tell me about new versions and how to install them here

@@ -227,7 +227,7 @@ impl Setting {
             Self::Icons => ("Íconos", "Icons"),
             Self::Theme => ("Tema de colores", "Colour theme"),
             Self::Border => ("Bordes de los paneles", "Panel borders"),
-            Self::Thumbnails => ("Portadas de los videos (kitty)", "Video thumbnails (kitty)"),
+            Self::Thumbnails => ("Portadas de los videos (kitty, iTerm2, Sixel)", "Video thumbnails (kitty, iTerm2, Sixel)"),
             Self::Mouse => ("Mouse (para copiar texto: Shift)", "Mouse (to copy text: Shift)"),
             Self::Splash => ("Logo al abrir la app", "Logo when the app opens"),
             Self::FxStartup => ("Animación al abrir la app", "Animation when the app starts"),

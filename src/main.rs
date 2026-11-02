@@ -21,14 +21,14 @@ use ratatui::layout::Rect;
 
 use tubetui::anim::Animations;
 use tubetui::app::{Action, Effect, Playback, PlayerCommand, SettingValue, State};
-use tubetui::config::{self, Config, PlayerMode};
+use tubetui::config::{self, Config};
 use tubetui::domain::{Live, TabId, Video};
 use tubetui::i18n::Lang;
 use tubetui::media::{self, MediaKind};
 use tubetui::player::{self, Geometry, Launch, Mode, Player};
 use tubetui::relocate;
 use tubetui::store::{self, Paths};
-use tubetui::thumbs::Thumbnails;
+use tubetui::thumbs::{Graphics, Thumbnails};
 use tubetui::youtube::{self, Items};
 use tubetui::{keymap, mouse, session, ui};
 
@@ -332,11 +332,12 @@ impl Runtime {
             }
             // Redraw only on change: every redraw competes with mpv for the terminal.
             if dirty || self.animations.running() {
+                let erased;
                 let loading = self.loading_since.map(|t| t.elapsed());
                 let embedded = self.mode().in_pane();
-                // Thumbnails need kitty itself, whatever the video mode.
-                let kitty = player::resolve_mode(PlayerMode::Auto, |key| std::env::var(key).ok()) == Mode::Embedded;
-                let thumbnails = kitty && self.state.config.ui.thumbnails;
+                // Thumbnails need a terminal with images, whatever the video mode.
+                let graphics = Graphics::detect(|key| std::env::var(key).ok());
+                let thumbnails = graphics.is_some() && self.state.config.ui.thumbnails;
                 let playing = self.state.active_tab().and_then(|t| self.players.get(&t.id)).map(Player::info);
                 let view = ui::View { embedded, now: now(), loading, opening, thumbnails, playing };
                 let t = Instant::now();
@@ -357,11 +358,19 @@ impl Runtime {
                             .into_iter()
                             .chain(self.state.videos_from_selection(THUMBS_AHEAD).iter().map(|v| v.id.as_str())),
                     );
-                    self.thumbs.show(ui::thumbnail_area(&self.state, terminal.size()?.into()));
+                    if let Some(graphics) = graphics {
+                        self.thumbs.set_graphics(graphics, player::cell_size());
+                    }
+                    erased = self.thumbs.show(ui::thumbnail_area(&self.state, terminal.size()?.into()));
                 } else {
-                    self.thumbs.show(None);
+                    erased = self.thumbs.show(None);
                 }
                 dirty = false;
+                if erased {
+                    // iTerm2 and Sixel images stay until something paints over them.
+                    terminal.clear()?;
+                    dirty = true;
+                }
             }
             self.state.video_window = self.mode() == Mode::Window;
             if self.mode() == Mode::Overlay

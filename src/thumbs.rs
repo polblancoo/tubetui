@@ -1,6 +1,8 @@
 //! Video thumbnails for the preview panel. One background thread downloads
 //! YouTube's small JPEGs (320×180, about 15 KB); kitty draws the selected one
 //! with its graphics protocol, scaled to the cells the panel leaves free.
+//! Besides kitty's protocol, iTerm2's inline images (iTerm2, WezTerm) and
+//! Sixel (foot, mlterm, contour, ...) are drawn too.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -8,6 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use base64::Engine;
+use image::ImageEncoder;
 use ratatui::layout::Rect;
 
 /// Our image in kitty, apart from the ones mpv draws.
@@ -16,6 +19,49 @@ const IMAGE_ID: u32 = 0x7475_6265;
 const CACHE: usize = 64;
 /// kitty takes the image in base64 chunks of at most this many bytes.
 const CHUNK: usize = 4096;
+
+/// How the terminal can draw images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Graphics {
+    Kitty,
+    Iterm2,
+    Sixel,
+}
+
+impl Graphics {
+    /// Picks the protocol from the environment. `TUBETUI_GRAPHICS`
+    /// (`kitty`, `iterm2`, `sixel` or `none`) overrides the detection, even
+    /// inside a multiplexer; otherwise multiplexers get no images.
+    pub fn detect(env: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        if let Some(forced) = env("TUBETUI_GRAPHICS") {
+            return match forced.to_lowercase().as_str() {
+                "kitty" => Some(Self::Kitty),
+                "iterm2" | "iterm" => Some(Self::Iterm2),
+                "sixel" => Some(Self::Sixel),
+                _ => None,
+            };
+        }
+        if crate::player::in_multiplexer(&env) {
+            return None;
+        }
+        let term = env("TERM").unwrap_or_default().to_lowercase();
+        let program = env("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+        if env("KITTY_WINDOW_ID").is_some() || term == "xterm-kitty" {
+            Some(Self::Kitty)
+        } else if program == "iterm.app" || program == "wezterm" || env("LC_TERMINAL").as_deref() == Some("iTerm2") {
+            Some(Self::Iterm2)
+        } else if term.starts_with("foot")
+            || term.starts_with("mlterm")
+            || term.starts_with("contour")
+            || term.contains("sixel")
+            || term == "yaft-256color"
+        {
+            Some(Self::Sixel)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thumb {
@@ -33,10 +79,19 @@ pub struct Thumbnails {
     done: mpsc::Receiver<(String, Option<Thumb>)>,
     /// What is on screen now.
     shown: Option<(String, Rect)>,
+    graphics: Graphics,
+    /// Pixels of one terminal cell (Sixel draws pixels, not cells).
+    cell: (u16, u16),
 }
 
 impl Default for Thumbnails {
     fn default() -> Self {
+        Self::new(Graphics::Kitty, (10, 20))
+    }
+}
+
+impl Thumbnails {
+    pub fn new(graphics: Graphics, cell: (u16, u16)) -> Self {
         let (jobs, queue) = mpsc::channel::<String>();
         let (finished, done) = mpsc::channel();
         std::thread::spawn(move || {
@@ -46,11 +101,17 @@ impl Default for Thumbnails {
                 }
             }
         });
-        Self { cache: HashMap::new(), order: VecDeque::new(), requested: HashSet::new(), jobs, done, shown: None }
+        Self { cache: HashMap::new(), order: VecDeque::new(), requested: HashSet::new(), jobs, done, shown: None, graphics, cell }
     }
-}
 
-impl Thumbnails {
+    pub fn set_graphics(&mut self, graphics: Graphics, cell: (u16, u16)) {
+        if (self.graphics, self.cell) != (graphics, cell) {
+            self.graphics = graphics;
+            self.cell = cell;
+            self.shown = None;
+        }
+    }
+
     /// Downloads these thumbnails, in order, unless they are here or on the way.
     pub fn want<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) {
         for id in ids {
@@ -80,19 +141,33 @@ impl Thumbnails {
     }
 
     /// Shows the thumbnail of `target` (video id, cells), or none. Writes to
-    /// the terminal only when that changes.
-    pub fn show(&mut self, target: Option<(String, Rect)>) {
+    /// the terminal only when that changes. Returns whether an image that
+    /// kitty cannot delete (iTerm2, Sixel) was left on the cells: the caller
+    /// must repaint the screen, and call this again.
+    pub fn show(&mut self, target: Option<(String, Rect)>) -> bool {
         let target = target.filter(|(id, _)| self.cache.contains_key(id));
         if target == self.shown {
-            return;
+            return false;
         }
-        let mut out = delete();
+        if self.graphics != Graphics::Kitty {
+            let stale = self.shown.as_ref().is_some_and(|(_, old)| target.as_ref().is_none_or(|(_, new)| new != old));
+            if stale {
+                self.shown = None;
+                return true;
+            }
+        }
+        let mut out = if self.graphics == Graphics::Kitty { delete() } else { String::new() };
         if let Some((id, area)) = &target {
-            out.push_str(&place(&self.cache[id], *area));
+            out.push_str(&match self.graphics {
+                Graphics::Kitty => place(&self.cache[id], *area),
+                Graphics::Iterm2 => place_iterm2(&self.cache[id], *area),
+                Graphics::Sixel => place_sixel(&self.cache[id], *area, self.cell),
+            });
         }
         let mut stdout = std::io::stdout().lock();
         let _ = stdout.write_all(out.as_bytes()).and_then(|()| stdout.flush());
         self.shown = target;
+        false
     }
 
     /// Something removed every image from the screen: draw it again next time.
@@ -142,6 +217,77 @@ fn place(thumb: &Thumb, area: Rect) -> String {
     out
 }
 
+/// iTerm2's inline image protocol: a PNG scaled to the cells.
+fn place_iterm2(thumb: &Thumb, area: Rect) -> String {
+    let mut png = Vec::new();
+    let encoded = image::codecs::png::PngEncoder::new(&mut png).write_image(
+        &thumb.rgb,
+        thumb.width,
+        thumb.height,
+        image::ExtendedColorType::Rgb8,
+    );
+    if encoded.is_err() {
+        return String::new();
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    format!(
+        "\x1b7\x1b[{};{}H\x1b]1337;File=inline=1;size={};width={};height={};preserveAspectRatio=0:{data}\x07\x1b8",
+        area.y + 1,
+        area.x + 1,
+        png.len(),
+        area.width,
+        area.height
+    )
+}
+
+/// Sixel: the thumbnail scaled to the area's pixels, in 256 colors (3-3-2 bits).
+fn place_sixel(thumb: &Thumb, area: Rect, cell: (u16, u16)) -> String {
+    let width = (u32::from(area.width) * u32::from(cell.0)).max(1);
+    let height = (u32::from(area.height) * u32::from(cell.1)).max(1);
+    let Some(source) = image::RgbImage::from_raw(thumb.width, thumb.height, thumb.rgb.clone()) else {
+        return String::new();
+    };
+    let scaled = image::imageops::resize(&source, width, height, image::imageops::FilterType::Triangle);
+    let index = |p: &image::Rgb<u8>| (p[0] >> 5) << 5 | (p[1] >> 5) << 2 | p[2] >> 6;
+    let mut out = format!("\x1b7\x1b[{};{}H\x1bP0;1;0q\"1;1;{width};{height}", area.y + 1, area.x + 1);
+    // Palette: percentages 0-100 per channel.
+    for i in 0..=255_u32 {
+        let (r, g, b) = ((i >> 5) & 7, (i >> 2) & 7, i & 3);
+        out.push_str(&format!("#{i};2;{};{};{}", r * 100 / 7, g * 100 / 7, b * 100 / 3));
+    }
+    for band in (0..height).step_by(6) {
+        let rows = (height - band).min(6);
+        // For each color of the band, the sixel bit pattern of every column.
+        let mut masks: HashMap<u8, Vec<u8>> = HashMap::new();
+        for x in 0..width {
+            for dy in 0..rows {
+                let color = index(scaled.get_pixel(x, band + dy));
+                masks.entry(color).or_insert_with(|| vec![0; width as usize])[x as usize] |= 1 << dy;
+            }
+        }
+        let mut colors: Vec<_> = masks.into_iter().collect();
+        colors.sort_by_key(|(c, _)| *c);
+        for (n, (color, mask)) in colors.iter().enumerate() {
+            out.push_str(&format!("#{color}"));
+            let mut x = 0;
+            while x < mask.len() {
+                let run = mask[x..].iter().take_while(|&&m| m == mask[x]).count();
+                let ch = (63 + mask[x]) as char;
+                if run > 3 {
+                    out.push_str(&format!("!{run}{ch}"));
+                } else {
+                    out.extend(std::iter::repeat_n(ch, run));
+                }
+                x += run;
+            }
+            // `$` returns to the band's start for the next color, `-` goes down.
+            out.push(if n + 1 < colors.len() { '$' } else { '-' });
+        }
+    }
+    out.push_str("\x1b\\\x1b8");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +312,40 @@ mod tests {
         let out = place(&thumb(2, 2), Rect::new(0, 0, 4, 2));
         assert!(out.contains(",m=0;"));
         assert_eq!(out.matches("\x1b_G").count(), 1);
+    }
+
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_owned())
+    }
+
+    #[test]
+    fn detects_the_protocol_of_the_terminal() {
+        assert_eq!(Graphics::detect(env(&[("KITTY_WINDOW_ID", "1")])), Some(Graphics::Kitty));
+        assert_eq!(Graphics::detect(env(&[("TERM_PROGRAM", "iTerm.app")])), Some(Graphics::Iterm2));
+        assert_eq!(Graphics::detect(env(&[("TERM_PROGRAM", "WezTerm")])), Some(Graphics::Iterm2));
+        assert_eq!(Graphics::detect(env(&[("TERM", "foot")])), Some(Graphics::Sixel));
+        assert_eq!(Graphics::detect(env(&[("TERM", "xterm-256color")])), None);
+        assert_eq!(Graphics::detect(env(&[("TERM", "foot"), ("TMUX", "1")])), None);
+        assert_eq!(Graphics::detect(env(&[("TUBETUI_GRAPHICS", "sixel"), ("TMUX", "1")])), Some(Graphics::Sixel));
+        assert_eq!(Graphics::detect(env(&[("TUBETUI_GRAPHICS", "none"), ("TERM", "foot")])), None);
+    }
+
+    #[test]
+    fn iterm2_sends_a_png_scaled_to_the_cells() {
+        let out = place_iterm2(&thumb(4, 4), Rect::new(1, 2, 20, 5));
+        assert!(out.starts_with("\x1b7\x1b[3;2H\x1b]1337;File=inline=1;size="), "{out:.60}");
+        assert!(out.contains(";width=20;height=5;preserveAspectRatio=0:"));
+        assert!(out.ends_with("\x07\x1b8"));
+    }
+
+    #[test]
+    fn sixel_draws_bands_of_six_pixels() {
+        // 2x1 cells of 4x12 px: 8x12 pixels, two bands.
+        let out = place_sixel(&thumb(4, 4), Rect::new(0, 0, 2, 1), (4, 12));
+        assert!(out.starts_with("\x1b7\x1b[1;1H\x1bP0;1;0q\"1;1;8;12#0;2;0;0;0"), "{out:.60}");
+        assert!(out.ends_with("\x1b\\\x1b8"));
+        assert_eq!(out.matches('-').count(), 2, "one line feed per band");
+        assert!(out.contains("!8~"), "a flat color is one run of full sixels");
     }
 
     #[test]

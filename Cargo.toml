@@ -10,7 +10,7 @@ homepage = "https://polblancoo.github.io/tubetui/"
 readme = "README.md"
 keywords = ["youtube", "tui", "ratatui", "mpv", "terminal"]
 categories = ["command-line-utilities", "multimedia::video"]
-exclude = ["/.github", "/ConfigSeed.toml", "/docs", "/packaging"]
+exclude = ["/.github", "/ConfigSeed.toml", "/docs", "/packaging", "/Informes"]
 
 [dependencies]
 anyhow = "1.0.104"

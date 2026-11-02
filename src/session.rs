@@ -247,7 +247,7 @@ impl JarCopy {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let copy = sibling(jar, &format!("run-{}-{n}", std::process::id()));
-        std::fs::copy(jar, &copy)?;
+        copy_private(jar, &copy)?;
         Ok(Self(copy))
     }
 
@@ -266,7 +266,7 @@ impl Drop for JarCopy {
 /// while playing. The shared jar if the copy can't be made.
 pub fn player_jar(jar: &Path) -> PathBuf {
     let (copy, partial) = (sibling(jar, "mpv"), sibling(jar, &format!("mpv-{}", std::process::id())));
-    match std::fs::copy(jar, &partial).and_then(|_| std::fs::rename(&partial, &copy)) {
+    match copy_private(jar, &partial).and_then(|()| std::fs::rename(&partial, &copy)) {
         Ok(()) => copy,
         Err(_) => {
             let _ = std::fs::remove_file(&partial);
@@ -282,10 +282,12 @@ pub fn refresh_cookies(spec: &str, path: &Path, force: bool, lang: Lang) -> Resu
     static EXPORT: Mutex<()> = Mutex::new(());
     let _one_at_a_time = EXPORT.lock().unwrap_or_else(PoisonError::into_inner);
     if !force && is_fresh(path, COOKIES_MAX_AGE) {
+        // An export from an older version: trim it and lock it down.
+        let _ = harden(path);
         return Ok(());
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        private_dir(dir).map_err(|e| e.to_string())?;
     }
     // A new file: yt-dlp also loads an existing jar, and its stale login
     // would win over the browser's.
@@ -299,6 +301,8 @@ pub fn refresh_cookies(spec: &str, path: &Path, force: bool, lang: Lang) -> Resu
         .output()
         .map_err(|e| format!("{}: {e}", lang.pick("no se pudo ejecutar yt-dlp", "couldn't run yt-dlp")))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // yt-dlp exports every site's cookies: keep the Google ones, owner-only.
+    let _ = harden(&fresh);
     let jar = std::fs::read_to_string(&fresh).ok();
     let error = cookie_error(spec, &stderr, lang)
         .or_else(|| jar.as_deref().is_some_and(|text| !has_login(text)).then(|| no_login(spec, lang)));
@@ -314,6 +318,117 @@ pub fn refresh_cookies(spec: &str, path: &Path, force: bool, lang: Lang) -> Resu
         let detail = stderr.lines().last().unwrap_or(lang.pick("sin detalle", "no details"));
         Err(format!("{} {spec}: {detail}", lang.pick("no se pudo leer la sesión de", "couldn't read the login of")))
     }
+}
+
+/// Creates `dir` (and its parents) and makes `dir` itself owner-only: the
+/// cookie exports live there.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Writes `text` to `path` readable by its owner only, from the first byte.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        // `mode` only applies to a new file.
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(text.as_bytes())
+}
+
+/// A copy of `from` at `to` that only its owner can read, whatever `from` allows.
+fn copy_private(from: &Path, to: &Path) -> std::io::Result<()> {
+    write_private(to, &std::fs::read_to_string(from)?)
+}
+
+/// Cuts the cookie file at `path` down to the Google ones and makes it
+/// owner-only. Rewritten whole through a temporary file, since other threads
+/// read it meanwhile.
+fn harden(path: &Path) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let kept = keep_google_cookies(&text);
+    let private = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(path)?.permissions().mode() & 0o077 == 0
+        }
+        #[cfg(not(unix))]
+        true
+    };
+    if kept == text && private {
+        return Ok(());
+    }
+    let partial = sibling(path, &format!("trim-{}", std::process::id()));
+    let result = write_private(&partial, &kept).and_then(|()| std::fs::rename(&partial, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result
+}
+
+/// Whether cookies for `domain` (Netscape style, with or without a leading
+/// dot) belong to YouTube or Google.
+fn is_google_domain(domain: &str) -> bool {
+    const SITES: &[&str] = &[
+        "youtube.com",
+        "youtu.be",
+        "google.com",
+        "googlevideo.com",
+        "googleusercontent.com",
+        "googleapis.com",
+        "ytimg.com",
+        "gstatic.com",
+    ];
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+    let under = |site: &str| domain == site || domain.strip_suffix(site).is_some_and(|rest| rest.ends_with('.'));
+    if SITES.iter().any(|site| under(site)) {
+        return true;
+    }
+    // google.de, google.co.uk, google.com.br, and their subdomains.
+    let labels: Vec<&str> = domain.split('.').collect();
+    let tail_ok = |tail: &[&str]| match tail {
+        [tld] => tld.len() == 2,
+        [second, tld] => matches!(*second, "com" | "co") && tld.len() == 2,
+        _ => false,
+    };
+    labels.iter().position(|l| *l == "google").is_some_and(|i| tail_ok(&labels[i + 1..]))
+}
+
+/// The lines of a Netscape cookie file worth keeping: comments, blank lines
+/// and the YouTube / Google cookies (`#HttpOnly_` ones included).
+pub fn keep_google_cookies(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let cookie = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+        let keep = if cookie.starts_with('#') || cookie.trim().is_empty() {
+            true
+        } else {
+            let fields: Vec<&str> = cookie.split('\t').collect();
+            fields.len() == 7 && is_google_domain(fields[0])
+        };
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Whether a Netscape cookie file carries a YouTube login.
@@ -576,5 +691,77 @@ mod tests {
         let mpv = player_jar(&jar);
         assert_ne!(mpv, jar);
         assert_eq!(std::fs::read_to_string(&mpv).unwrap(), "login");
+    }
+
+    const EXPORT: &str = "# Netscape HTTP Cookie File\n# This file is generated by yt-dlp.  Do not edit.\n\n\
+        .youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tabc\n\
+        #HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret\n\
+        accounts.google.com\tFALSE\t/\tTRUE\t0\tLSID\tl\n\
+        #HttpOnly_.google.com\tTRUE\t/\tTRUE\t0\tNID\tn\n\
+        .google.co.uk\tTRUE\t/\tTRUE\t0\tNID\tuk\n\
+        .rr1---sn.googlevideo.com\tTRUE\t/\tTRUE\t0\tx\ty\n\
+        youtu.be\tFALSE\t/\tTRUE\t0\tz\tz\n\
+        .github.com\tTRUE\t/\tTRUE\t0\tuser_session\tnope\n\
+        #HttpOnly_.bank.example\tTRUE\t/\tTRUE\t0\tsession\tnope\n\
+        .notyoutube.com\tTRUE\t/\tTRUE\t0\ta\tnope\n\
+        .google.evil.com\tTRUE\t/\tTRUE\t0\ta\tnope\n\
+        .youtube.com.evil.org\tTRUE\t/\tTRUE\t0\ta\tnope\n\
+        broken line\n";
+
+    #[test]
+    fn the_export_keeps_google_cookies_only() {
+        let kept = keep_google_cookies(EXPORT);
+        assert!(kept.starts_with("# Netscape HTTP Cookie File\n# This file is generated"), "{kept}");
+        for domain in [
+            ".youtube.com",
+            "#HttpOnly_.youtube.com",
+            "accounts.google.com",
+            "#HttpOnly_.google.com",
+            ".google.co.uk",
+            ".rr1---sn.googlevideo.com",
+            "youtu.be",
+        ] {
+            assert!(kept.contains(&format!("{domain}\t")), "{domain} kept");
+        }
+        for domain in ["github", "bank.example", "notyoutube", "google.evil", "evil.org", "broken"] {
+            assert!(!kept.contains(domain), "{domain} dropped");
+        }
+        assert!(has_login(&kept), "the login survives");
+        assert_eq!(keep_google_cookies(&kept), kept, "trimming twice changes nothing");
+    }
+
+    #[test]
+    fn google_domains() {
+        for yes in
+            ["google.com", ".google.com", "www.google.de", ".google.com.br", "i.ytimg.com", "lh3.googleusercontent.com"]
+        {
+            assert!(is_google_domain(yes), "{yes}");
+        }
+        for no in ["googl.com", "mygoogle.com", "google.com.evil.org", "google.example.com", "ytimg.com.evil.org", ""] {
+            assert!(!is_google_domain(no), "{no}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cookie_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = temp_dir("private").join("cache");
+        private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        let jar = dir.join("cookies-brave.txt");
+        std::fs::write(&jar, EXPORT).unwrap();
+        std::fs::set_permissions(&jar, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // An export from an older version is trimmed and locked down in place.
+        harden(&jar).unwrap();
+        assert_eq!(mode(&jar), 0o600);
+        assert_eq!(std::fs::read_to_string(&jar).unwrap(), keep_google_cookies(EXPORT));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file left");
+        // The copies for yt-dlp and mpv are owner-only even from a lax source.
+        std::fs::set_permissions(&jar, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let copy = JarCopy::new(&jar).unwrap();
+        assert_eq!(mode(copy.path()), 0o600);
+        assert_eq!(mode(&player_jar(&jar)), 0o600);
     }
 }

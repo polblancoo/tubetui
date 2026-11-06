@@ -120,11 +120,30 @@ Every video opens in its own tab.
   tray**; click the tray icon for a menu (show the terminal, pause / resume,
   open a section, settings, quit)
 
+## Supported terminals
+
+Thumbnails and the embedded video depend on the image protocol of your terminal.
+tubetui detects it on its own:
+
+| Terminal | Protocol | Thumbnails | Embedded video |
+|---|---|---|---|
+| kitty | kitty | yes | yes |
+| WezTerm, iTerm2 | iTerm2 inline images | yes | no (mpv window) |
+| foot, mlterm, contour, xterm `-ti vt340` | Sixel | yes | no (mpv window) |
+| alacritty and others | none | no | no (mpv window) |
+
+Inside tmux or screen images are off unless you force a protocol. To force one
+(or turn images off), set `TUBETUI_GRAPHICS` to `kitty`, `iterm2`, `sixel` or `none`:
+
+```
+TUBETUI_GRAPHICS=sixel xterm -ti vt340 -e tubetui
+```
+
 ## Requirements
 
 - [`mpv`](https://mpv.io) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) in `PATH` (on Windows they are
   also found where winget, scoop or the mpv installer leave them)
-- For embedded video: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal
+- For embedded video: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal. Thumbnails also work in other terminals (see below)
 - Optional: [`streamlink`](https://streamlink.github.io) plays live streams (🔴) instead of yt-dlp; without it yt-dlp does
 - Optional: [`vot-cli`](https://github.com/FOSWLY/vot-cli) for voice translation (key `T`: your default language → the other one →
   off; English first if none is set). It mixes the translated voice over the video, with the original sound low. It uses Yandex's unofficial

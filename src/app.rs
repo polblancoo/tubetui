@@ -216,8 +216,8 @@ impl Setting {
             }
             Self::Refresh => ("Releer la sesión", "Read the login again"),
             Self::Logout => ("Cerrar sesión", "Log out"),
-            Self::Language => ("Idioma del video", "Video language"),
-            Self::SubLang => ("Idioma de subtítulos y doblaje", "Subtitles and dubbing language"),
+            Self::Language => ("Audio y subtítulos", "Audio and subtitles"),
+            Self::SubLang => ("Idioma del doblaje y los subtítulos", "Dubbing and subtitles language"),
             Self::Quality => ("Calidad máxima", "Maximum quality"),
             Self::VideoMode => ("Video", "Video"),
             Self::BackgroundAudio => ("Al salir de la pestaña del video", "When leaving the video tab"),
@@ -1169,7 +1169,13 @@ impl State {
         match setting {
             Setting::Browser | Setting::Logout => self.session_label(),
             Setting::ImportCookies | Setting::Refresh | Setting::EditFile => String::new(),
-            Setting::Language => language_label(player.language, lang).into(),
+            Setting::Language => {
+                let mode = language_label(player.language, lang);
+                match player.language {
+                    Language::Original => mode.into(),
+                    _ => format!("{mode} · {}", language_name(&player.sub_lang, lang)),
+                }
+            }
             Setting::SubLang => language_name(&player.sub_lang, lang),
             Setting::Quality => format!("{}p", player.max_height),
             Setting::VideoMode => match player.mode {
@@ -4600,6 +4606,10 @@ mod tests {
         assert_eq!(s.setting_value(Setting::SubLang), "español (es)");
         assert_eq!(change(&mut s, Setting::SubLang), [saved("player", "sub_lang", text("en"))]);
         assert_eq!(s.setting_value(Setting::SubLang), "inglés (en)");
+        s.config.player.language = Language::Dubbed;
+        assert_eq!(s.setting_value(Setting::Language), "audio doblado · inglés (en)");
+        s.config.player.language = Language::Original;
+        assert_eq!(s.setting_value(Setting::Language), "original, sin subtítulos");
     }
 
     #[test]

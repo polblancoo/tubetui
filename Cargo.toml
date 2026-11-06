@@ -1,16 +1,16 @@
 [package]
 name = "tubetui"
-version = "0.8.8"
+version = "0.8.9"
 edition = "2024"
 rust-version = "1.88"
-description = "YouTube and your local videos and music in the terminal: tabs, video embedded in kitty via mpv, subscriptions, playlists, history with resume, downloads, SponsorBlock, chapters, comments and browser login"
+description = "YouTube and your local videos and music in the terminal: tabs, video embedded in kitty via mpv, thumbnails in kitty, iTerm2/WezTerm and Sixel terminals, subscriptions, playlists, history with resume, downloads, SponsorBlock, chapters, comments and browser login"
 license = "AGPL-3.0-only"
 repository = "https://github.com/polblancoo/tubetui"
 homepage = "https://polblancoo.github.io/tubetui/"
 readme = "README.md"
 keywords = ["youtube", "tui", "ratatui", "mpv", "terminal"]
 categories = ["command-line-utilities", "multimedia::video"]
-exclude = ["/.github", "/ConfigSeed.toml", "/docs", "/packaging"]
+exclude = ["/.github", "/ConfigSeed.toml", "/docs", "/packaging", "/Informes"]
 
 [dependencies]
 anyhow = "1.0.104"

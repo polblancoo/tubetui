@@ -346,10 +346,10 @@ impl Runtime {
                     ui::draw(f, &self.state, &view);
                     self.animations.render(f);
                 })?;
-                dbg(format!("draw {:?}", t.elapsed()));
+                dbg(|| format!("draw {:?}", t.elapsed()));
                 let t = Instant::now();
                 self.place_videos(terminal.size()?.into());
-                dbg(format!("place {:?}", t.elapsed()));
+                dbg(|| format!("place {:?}", t.elapsed()));
                 if thumbnails {
                     let tab = self.state.active_tab();
                     let current = tab.and_then(|t| t.playback.video.as_ref()).map(|v| v.id.as_str());
@@ -394,7 +394,7 @@ impl Runtime {
             if event::poll(wait).context("reading terminal events")? {
                 match event::read()? {
                     Event::Key(key) => {
-                        dbg(format!("key {:?} {:?}", key.code, key.kind));
+                        dbg(|| format!("key {:?} {:?}", key.code, key.kind));
                         pending.extend(keymap::map(key, self.state.key_context()))
                     }
                     // Another program in front: an overlay would float over it.
@@ -464,9 +464,13 @@ impl Runtime {
                 }
                 for effect in self.state.update(action) {
                     let t = Instant::now();
-                    let name = format!("{effect:?}").chars().take(40).collect::<String>();
+                    let name = debug_path()
+                        .is_some()
+                        .then(|| format!("{effect:?}").chars().take(40).collect::<String>())
+                        .unwrap_or_default();
                     self.perform(effect, terminal)?;
-                    dbg(format!("effect {name} {:?}", t.elapsed()));
+                    let elapsed = t.elapsed();
+                    dbg(move || format!("effect {name} {elapsed:?}"));
                 }
             }
             // Players whose tab is gone (the video ended or mpv failed).
@@ -657,7 +661,7 @@ impl Runtime {
             }
             Effect::SaveWatched(id) => {
                 if let Err(e) = store::add_watched(&self.paths.watched, &id) {
-                    dbg(format!("watched.txt: {e}"));
+                    dbg(|| format!("watched.txt: {e}"));
                 }
             }
             Effect::Trash(paths) => {
@@ -755,7 +759,7 @@ impl Runtime {
             Effect::EditConfig => self.edit_config(terminal)?,
             Effect::SaveHistory(history) => {
                 if let Err(e) = store::save_history(&self.paths.history, &history) {
-                    dbg(format!("history.json: {e}"));
+                    dbg(|| format!("history.json: {e}"));
                 }
             }
             Effect::SaveLater(videos) => {
@@ -846,7 +850,7 @@ impl Runtime {
             }
             Effect::SaveDownloads(downloads) => {
                 if let Err(e) = store::save_downloads(&self.paths.downloads, &downloads) {
-                    dbg(format!("downloads.json: {e}"));
+                    dbg(|| format!("downloads.json: {e}"));
                 }
             }
             Effect::Open(id, playback) => {
@@ -964,7 +968,7 @@ impl Runtime {
             let Some(playback) = self.state.tabs.iter().find(|t| t.id == id).map(|t| t.playback.clone()) else {
                 continue;
             };
-            dbg(format!("retry {id:?} with cookies"));
+            dbg(|| format!("retry {id:?} with cookies"));
             self.open(id, &playback, true, screen);
         }
     }
@@ -1162,16 +1166,25 @@ fn import_cookies(source: &Path, dest: &Path, lang: Lang) -> Result<String, Stri
     Ok(dest.display().to_string())
 }
 
+/// Where the timing trace goes, when `TUBETUI_DEBUG` points at a file.
+/// Read once and cached, so the hot paths stay free when tracing is off.
+fn debug_path() -> Option<&'static PathBuf> {
+    use std::sync::OnceLock;
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| std::env::var_os("TUBETUI_DEBUG").map(PathBuf::from)).as_ref()
+}
+
 /// Timing trace for diagnosing lag: set `TUBETUI_DEBUG=/path/to/file`.
-fn dbg(msg: impl AsRef<str>) {
+/// The message is built only when tracing is on, so the hot paths that call
+/// this on every draw, key and effect stay free when it is off.
+fn dbg(message: impl FnOnce() -> String) {
     use std::io::Write;
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
+    let Some(path) = debug_path() else { return };
     let start = *START.get_or_init(Instant::now);
-    if let Ok(path) = std::env::var("TUBETUI_DEBUG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = writeln!(f, "{:>8.1} {}", start.elapsed().as_secs_f64() * 1000.0, msg.as_ref());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{:>8.1} {}", start.elapsed().as_secs_f64() * 1000.0, message());
     }
 }
 

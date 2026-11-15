@@ -3188,6 +3188,7 @@ impl State {
             Some(p) => (p.watch.as_ref().and_then(|w| w.comments_token.clone()), p.watch, p.segments),
             None => (None, None, Vec::new()),
         };
+        let has_watch = watch.is_some();
         let playback = {
             let tab = &mut self.tabs[index];
             tab.playback = Playback::youtube(next.clone());
@@ -3204,7 +3205,7 @@ impl State {
         };
         self.status = status;
         let mut effects = vec![Effect::Open(id, playback)];
-        if watch.is_some() {
+        if has_watch {
             if let Some(token) = token {
                 effects.push(Effect::Comments { tab: id, token });
             }

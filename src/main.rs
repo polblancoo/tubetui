@@ -182,6 +182,9 @@ struct Runtime {
     /// The video waiting to be weighed, since when; one yt-dlp at a time.
     size_wait: Option<(String, Instant)>,
     sizing: bool,
+    /// The video waiting for its details, since when; one fetch at a time.
+    prefetch_wait: Option<(String, Instant)>,
+    prefetch_inflight: Option<String>,
     /// The yt-dlp process of each running download, to cancel it.
     downloads: HashMap<u64, Arc<Mutex<Option<std::process::Child>>>>,
     /// Players of closed tabs, quitting in the background.
@@ -249,6 +252,8 @@ impl Runtime {
             next_poll: Instant::now() + SUBS_FIRST_POLL,
             size_wait: None,
             sizing: false,
+            prefetch_wait: None,
+            prefetch_inflight: None,
             closing: Vec::new(),
             animations: Animations::default(),
             thumbs: Thumbnails::default(),
@@ -435,6 +440,7 @@ impl Runtime {
             pending.extend(self.voices_to_translate());
             self.poll_subs();
             self.ask_size();
+            self.ask_prefetch();
             self.retry_with_cookies(terminal.size()?.into());
             // Players that went away: their tab may stay (details and up next).
             let exited: Vec<TabId> =
@@ -461,6 +467,13 @@ impl Runtime {
                 }
                 if let Action::Sized(..) = &action {
                     self.sizing = false;
+                }
+                if let Action::Prefetched { video, .. } = &action {
+                    // A newer prefetch started while this one was fetching.
+                    if self.prefetch_inflight.as_deref() != Some(video) {
+                        continue;
+                    }
+                    self.prefetch_inflight = None;
                 }
                 for effect in self.state.update(action) {
                     let t = Instant::now();
@@ -541,6 +554,39 @@ impl Runtime {
             let copy = cookies.and_then(|c| session::JarCopy::new(&c).ok());
             let result = youtube::size(&video.url(), &format, copy.as_ref().map(session::JarCopy::path));
             Action::Sized(video.id, result.map_err(|e| e.to_string()))
+        });
+    }
+
+    /// Fetches the selected video's details and skips once the selection
+    /// rests on it, so playing it feels instant. One fetch at a time.
+    fn ask_prefetch(&mut self) {
+        if self.prefetch_inflight.is_some() {
+            return;
+        }
+        let Some(video) = self.state.prefetch_wanted().cloned() else {
+            self.prefetch_wait = None;
+            return;
+        };
+        match &self.prefetch_wait {
+            Some((id, since)) if *id == video.id && since.elapsed() >= SIZE_DELAY => {}
+            Some((id, _)) if *id == video.id => return,
+            _ => {
+                self.prefetch_wait = Some((video.id, Instant::now()));
+                return;
+            }
+        }
+        self.prefetch_wait = None;
+        self.prefetch_inflight = Some(video.id.clone());
+        let cookies = self.cookies.clone();
+        let sponsorblock = self.state.config.player.sponsorblock;
+        self.background(move || {
+            let watch = youtube::watch(&video.id, cookies.as_deref()).map_err(|e| e.to_string());
+            let segments = if sponsorblock {
+                tubetui::sponsorblock::fetch(&video.id).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Action::Prefetched { video: video.id, watch, segments }
         });
     }
 

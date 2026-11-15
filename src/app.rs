@@ -528,6 +528,12 @@ pub enum Action {
     BrowsersUsed(HashMap<String, i64>),
     /// The watch page of a tab's video arrived.
     Watched(TabId, Result<Watch, String>),
+    /// Details fetched ahead for a video, before any tab plays it.
+    Prefetched {
+        video: String,
+        watch: Result<Watch, String>,
+        segments: Vec<Segment>,
+    },
     /// The login was (re)read. `cookies` is for the runtime; `subs` are my channels.
     SessionReady {
         cookies: Option<PathBuf>,
@@ -867,6 +873,15 @@ impl Playback {
     }
 }
 
+/// Details fetched ahead for the selected video, consumed when it is played
+/// so its tab shows up next and skips without another round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prefetched {
+    pub video: String,
+    pub watch: Option<Watch>,
+    pub segments: Vec<Segment>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub id: TabId,
@@ -997,6 +1012,8 @@ pub struct State {
     pub update: Option<Update>,
     /// Videos I watched, here or on YouTube.
     pub watched: HashSet<String>,
+    /// Details fetched ahead for the selected video, if it is played next.
+    pub prefetched: Option<Prefetched>,
     /// The last system check.
     pub system: Option<(Manager, Vec<Check>)>,
     /// Feeds show the watched videos too (`v`).
@@ -1056,6 +1073,7 @@ impl State {
             file_sort: FileSort::default(),
             update: None,
             watched: HashSet::new(),
+            prefetched: None,
             system: None,
             tabs: Vec::new(),
             active: 0,
@@ -1405,6 +1423,13 @@ impl State {
                     if let Some(token) = token.filter(|_| tab.comments.is_none()) {
                         return vec![Effect::Comments { tab: id, token }];
                     }
+                }
+            }
+            Action::Prefetched { video, watch, segments } => {
+                // A newer prefetch may have filled the slot while this one
+                // was fetching: only an empty slot or the same video wins.
+                if self.prefetched.as_ref().is_none_or(|p| p.video == video) {
+                    self.prefetched = Some(Prefetched { video, watch: watch.ok(), segments });
                 }
             }
             Action::CommentsLoaded(id, result) => {
@@ -2530,6 +2555,19 @@ impl State {
             .find(|v| v.live == crate::domain::Live::No && !self.sizes.contains_key(&v.id))
     }
 
+    /// The selected YouTube video, if its details and skips are worth fetching
+    /// ahead so playing it feels instant.
+    pub fn prefetch_wanted(&self) -> Option<&Video> {
+        let video = self.selected_video()?;
+        if self.prefetched.as_ref().is_some_and(|p| p.video == video.id) {
+            return None;
+        }
+        if self.tabs.iter().any(|t| t.playback.video.as_ref().is_some_and(|v| v.id == video.id)) {
+            return None;
+        }
+        Some(video)
+    }
+
     /// `(id, name, url)` of the channel the user is pointing at.
     pub(crate) fn selected_channel(&self) -> Option<(String, String, Option<String>)> {
         if let Some(v) = self.selected_video() {
@@ -3064,14 +3102,40 @@ impl State {
         self.tabs.push(Tab::new(id, playback.clone()));
         self.active = self.tabs.len();
         let mut effects = vec![Effect::Open(id, playback.clone())];
+        // Details fetched ahead while the selection rested on the video.
+        let prefetched = playback.video.as_ref().and_then(|v| self.prefetched.take_if(|p| p.video == v.id));
+        let has_prefetch = prefetched.is_some();
         if let Some(video) = &playback.video {
             self.watched.insert(video.id.clone());
-            effects.push(Effect::Watch { tab: id, video: video.id.clone() });
+            if prefetched.as_ref().is_none_or(|p| p.watch.is_none()) {
+                effects.push(Effect::Watch { tab: id, video: video.id.clone() });
+            }
             effects.push(Effect::SaveWatched(video.id.clone()));
         }
+        if let Some(p) = prefetched {
+            if let Some(watch) = p.watch {
+                if let Some(rating) = watch.rating {
+                    if let Some(video) = &playback.video {
+                        self.ratings.insert(video.id.clone(), rating);
+                    }
+                }
+                let token = watch.comments_token.clone();
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.watch = Some(watch);
+                    tab.segments = p.segments;
+                }
+                if let Some(token) = token {
+                    effects.push(Effect::Comments { tab: id, token });
+                }
+            } else if let Some(tab) = self.tabs.last_mut() {
+                tab.segments = p.segments;
+            }
+        }
         effects.extend(history);
-        if let Some(video) = playback.video.as_ref().filter(|_| self.config.player.sponsorblock) {
-            effects.push(Effect::Segments { tab: id, video: video.id.clone() });
+        if !has_prefetch {
+            if let Some(video) = playback.video.as_ref().filter(|_| self.config.player.sponsorblock) {
+                effects.push(Effect::Segments { tab: id, video: video.id.clone() });
+            }
         }
         effects
     }
@@ -3114,28 +3178,42 @@ impl State {
         self.watched.insert(next.id.clone());
         let sponsorblock = self.config.player.sponsorblock;
         self.fullscreen = false;
+        // Details fetched ahead while the video was up next.
+        let prefetched = self.prefetched.take_if(|p| p.video == next.id);
+        if let Some(rating) = prefetched.as_ref().and_then(|p| p.watch.as_ref()).and_then(|w| w.rating) {
+            self.ratings.insert(next.id.clone(), rating);
+        }
+        let has_prefetch = prefetched.is_some();
+        let (token, watch, segments) = match prefetched {
+            Some(p) => (p.watch.as_ref().and_then(|w| w.comments_token.clone()), p.watch, p.segments),
+            None => (None, None, Vec::new()),
+        };
         let playback = {
             let tab = &mut self.tabs[index];
             tab.playback = Playback::youtube(next.clone());
             tab.playback.start = start;
-            tab.watch = None;
             tab.related = 0;
             tab.on_related = false;
-            tab.segments.clear();
             tab.skipped.clear();
             tab.comments = None;
             tab.comments_from = 0;
             tab.ended = false;
+            tab.watch = watch;
+            tab.segments = segments;
             tab.playback.clone()
         };
         self.status = status;
-        let mut effects = vec![
-            Effect::Open(id, playback),
-            Effect::Watch { tab: id, video: next.id.clone() },
-            Effect::SaveWatched(next.id.clone()),
-        ];
+        let mut effects = vec![Effect::Open(id, playback)];
+        if watch.is_some() {
+            if let Some(token) = token {
+                effects.push(Effect::Comments { tab: id, token });
+            }
+        } else {
+            effects.push(Effect::Watch { tab: id, video: next.id.clone() });
+        }
+        effects.push(Effect::SaveWatched(next.id.clone()));
         effects.extend(history);
-        if sponsorblock {
+        if !has_prefetch && sponsorblock {
             effects.push(Effect::Segments { tab: id, video: next.id });
         }
         Some(effects)
@@ -4881,6 +4959,40 @@ mod tests {
         let effects = s.update(Action::PlayerClosed(a, None, true));
         assert!(effects.is_empty(), "off: falls back to ended");
         assert!(s.active_tab().unwrap().ended);
+    }
+
+    #[test]
+    fn prefetched_details_fill_the_tab_on_play() {
+        let mut s = with_videos(&["a"]);
+        let watch =
+            Watch { related: vec![video("r1")], comments_token: Some("T".into()), ..Watch::default() };
+        let segment = Segment { start: 10_000, end: 20_000, category: "sponsor".into() };
+        assert!(s.update(Action::Prefetched { video: "a".into(), watch: Ok(watch), segments: vec![segment] }).is_empty());
+        assert!(s.prefetch_wanted().is_none(), "already fetched for the selection");
+        match s.update(Action::Enter).as_slice() {
+            [Effect::Open(_, p), Effect::SaveWatched(_), Effect::Comments { tab: _, token }, Effect::SaveHistory(_)] => {
+                assert_eq!(p.video.as_ref().unwrap().id, "a");
+                assert_eq!(token, "T");
+            }
+            other => panic!("expected Open, SaveWatched, Comments and SaveHistory, got {other:?}"),
+        }
+        let tab = s.active_tab().unwrap();
+        assert_eq!(tab.watch.as_ref().unwrap().related, vec![video("r1")]);
+        assert_eq!(tab.segments.len(), 1);
+        assert!(s.prefetch_wanted().is_none(), "already open in a tab");
+    }
+
+    #[test]
+    fn failed_prefetch_still_asks_for_details_on_play() {
+        let mut s = with_videos(&["a"]);
+        assert!(s.update(Action::Prefetched { video: "a".into(), watch: Err("offline".into()), segments: vec![] }).is_empty());
+        match s.update(Action::Enter).as_slice() {
+            [Effect::Open(_, _), Effect::Watch { video, .. }, Effect::SaveWatched(_), Effect::SaveHistory(_), ..] => {
+                assert_eq!(video, "a");
+            }
+            other => panic!("expected Open and Watch, got {other:?}"),
+        }
+        assert!(s.active_tab().unwrap().watch.is_none());
     }
 
     #[test]

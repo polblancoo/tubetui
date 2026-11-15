@@ -440,8 +440,12 @@ impl Runtime {
             let exited: Vec<TabId> =
                 self.players.iter_mut().filter_map(|(id, p)| p.has_exited().then_some(*id)).collect();
             for id in exited {
+                let finished = self.players.get(&id).is_some_and(|p| {
+                    let info = p.info();
+                    Self::is_finished(info.position, info.duration)
+                });
                 self.stop(id);
-                pending.push(Action::PlayerClosed(id, None));
+                pending.push(Action::PlayerClosed(id, None, finished));
             }
             for action in pending {
                 dirty = true;
@@ -569,6 +573,16 @@ impl Runtime {
         let video = self.videos.get(&id)?.clone();
         let seconds = |s: Option<f64>| s.filter(|s| s.is_finite() && *s >= 0.0).map(|s| s as u32);
         Some(Action::Stopped { video, position: seconds(info.position), duration: seconds(info.duration) })
+    }
+
+    /// The video played to the end, not closed halfway.
+    fn is_finished(position: Option<f64>, duration: Option<f64>) -> bool {
+        match (position, duration) {
+            (Some(pos), Some(dur)) if pos.is_finite() && dur.is_finite() && dur > 0.0 && pos >= 30.0 => {
+                dur - pos < 30.0 || pos / dur > 0.95
+            }
+            _ => false,
+        }
     }
 
     fn perform(&mut self, effect: Effect, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -932,7 +946,7 @@ impl Runtime {
             }
             Err(e) => {
                 let failed = self.tr("No se pudo iniciar mpv", "Could not start mpv");
-                self.send(Action::PlayerClosed(id, Some(format!("{failed}: {e}"))))
+                self.send(Action::PlayerClosed(id, Some(format!("{failed}: {e}")), false))
             }
         }
     }

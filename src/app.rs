@@ -149,6 +149,7 @@ pub enum Setting {
     BackgroundAudio,
     SponsorBlock,
     Voice,
+    Autoplay,
     AppLang,
     Icons,
     Theme,
@@ -173,7 +174,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Browser,
         Self::ImportCookies,
         Self::Refresh,
@@ -185,6 +186,7 @@ impl Setting {
         Self::BackgroundAudio,
         Self::SponsorBlock,
         Self::Voice,
+        Self::Autoplay,
         Self::AppLang,
         Self::Icons,
         Self::Theme,
@@ -223,6 +225,7 @@ impl Setting {
             Self::BackgroundAudio => ("Al salir de la pestaña del video", "When leaving the video tab"),
             Self::SponsorBlock => ("Saltar patrocinios (SponsorBlock)", "Skip sponsors (SponsorBlock)"),
             Self::Voice => ("Traducir la voz solo a…", "Translate the voice automatically to…"),
+            Self::Autoplay => ("Reproducir el siguiente video al terminar", "Autoplay the next video"),
             Self::AppLang => ("Idioma de la app (Ctrl+y + l)", "App language (Ctrl+y + l)"),
             Self::Icons => ("Íconos", "Icons"),
             Self::Theme => ("Tema de colores", "Colour theme"),
@@ -580,7 +583,8 @@ pub enum Action {
     GoTab(usize),
     CloseTab,
     /// The player went away on its own (window closed, video ended, failed to start).
-    PlayerClosed(TabId, Option<String>),
+    /// `finished` is true when the video played to the end.
+    PlayerClosed(TabId, Option<String>, bool),
     /// streamlink's answer for a live stream: the address to play, or `None` to use yt-dlp.
     LiveSource(TabId, Option<String>),
     /// The player of a YouTube video stopped here (seconds), to resume it later.
@@ -1201,6 +1205,10 @@ impl State {
                 "" => self.tr("no (con T a mano)", "no (with T by hand)").into(),
                 code => voice_name(code, lang).into(),
             },
+            Setting::Autoplay => {
+                let (es, en) = on_off(player.autoplay);
+                self.tr(es, en).into()
+            }
             Setting::AppLang => lang.name().into(),
             Setting::Icons => self.config.ui.icons.as_str().into(),
             Setting::Theme => self.config.ui.theme.name().into(),
@@ -1550,7 +1558,12 @@ impl State {
                 }
                 return vec![Effect::OpenDirect(id, playback)];
             }
-            Action::PlayerClosed(id, error) => {
+            Action::PlayerClosed(id, error, finished) => {
+                if error.is_none() && finished && self.config.player.autoplay {
+                    if let Some(effects) = self.autoplay(id) {
+                        return effects;
+                    }
+                }
                 let keep = error.is_none() && self.tabs.iter().any(|t| t.id == id && self.details_shown(t));
                 if !keep {
                     self.remove_tab(id);
@@ -1996,6 +2009,11 @@ impl State {
                     .tr("Se aplica a los próximos videos (hace falta vot-cli)", "Applies to the next videos (needs vot-cli)")
                     .into();
                 save("player", "voice", SettingValue::Text(self.config.player.voice.clone()))
+            }
+            Setting::Autoplay => {
+                player.autoplay = !player.autoplay;
+                self.status = self.tr("Se aplica al terminar el video", "Applies when the video ends").into();
+                save("player", "autoplay", SettingValue::Bool(self.config.player.autoplay))
             }
             Setting::AppLang => self.toggle_ui_lang(),
             Setting::Icons => {
@@ -3071,6 +3089,50 @@ impl State {
             self.status = format!("⏯ {} {}", self.tr("Sigue desde", "Resuming at"), clock(start));
         }
         vec![Effect::Open(id, playback)]
+    }
+
+    /// Plays the first unwatched Up next video in the same tab, if any.
+    fn autoplay(&mut self, id: TabId) -> Option<Vec<Effect>> {
+        let index = self.tabs.iter().position(|t| t.id == id)?;
+        if self.tabs[index].playback.video.is_none() {
+            return None;
+        }
+        let current = self.tabs[index].playback.video.as_ref().map(|v| v.id.clone());
+        let open: Vec<String> =
+            self.tabs.iter().filter_map(|t| t.playback.video.as_ref().map(|v| v.id.clone())).collect();
+        let next = self.tabs[index]
+            .related_videos()
+            .iter()
+            .filter(|v| Some(&v.id) != current.as_ref())
+            .filter(|v| !open.contains(&v.id))
+            .find(|v| !self.watched.contains(&v.id))
+            .or_else(|| self.tabs[index].related_videos().first())
+            .cloned()?;
+        let tab = &mut self.tabs[index];
+        tab.playback = Playback::youtube(next.clone());
+        tab.playback.start = self.resume_at(&next.id);
+        tab.watch = None;
+        tab.related = 0;
+        tab.on_related = false;
+        tab.segments.clear();
+        tab.skipped.clear();
+        tab.comments = None;
+        tab.comments_from = 0;
+        tab.ended = false;
+        self.fullscreen = false;
+        self.status = format!("▶ {}: {}", self.tr("A continuación", "Up next"), next.title);
+        let history = self.remember(next.clone(), tab.playback.start);
+        self.watched.insert(next.id.clone());
+        let mut effects = vec![
+            Effect::Open(id, tab.playback.clone()),
+            Effect::Watch { tab: id, video: next.id.clone() },
+            Effect::SaveWatched(next.id.clone()),
+        ];
+        effects.extend(history);
+        if self.config.player.sponsorblock {
+            effects.push(Effect::Segments { tab: id, video: next.id });
+        }
+        Some(effects)
     }
 
     /// Where I left `id`, if it is worth resuming.
@@ -4251,10 +4313,10 @@ mod tests {
         let mut s = with_videos(&["a", "b"]);
         let a = play(&mut s, 0);
         play(&mut s, 1);
-        assert!(s.update(Action::PlayerClosed(a, Some("mpv no está".into()))).is_empty());
+        assert!(s.update(Action::PlayerClosed(a, Some("mpv no está".into()), false)).is_empty());
         assert_eq!(s.active_tab().unwrap().playback.video, Some(video("b")));
         assert_eq!(s.status, "mpv no está");
-        s.update(Action::PlayerClosed(TabId(99), None));
+        s.update(Action::PlayerClosed(TabId(99), None, false));
         assert_eq!(s.tabs.len(), 1);
     }
 
@@ -4759,7 +4821,7 @@ mod tests {
         let a = play(&mut s, 0);
         s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
         s.update(Action::Stopped { video: "a".into(), position: Some(125), duration: Some(600) });
-        assert!(s.update(Action::PlayerClosed(a, None)).is_empty());
+        assert!(s.update(Action::PlayerClosed(a, None, false)).is_empty());
         let tab = s.active_tab().unwrap();
         assert!(tab.ended && tab.on_related, "the tab stays, on its up next list");
         s.update(Action::Down);
@@ -4772,12 +4834,47 @@ mod tests {
             other => panic!("expected Open, got {other:?}"),
         }
         assert!(!s.active_tab().unwrap().ended);
-        s.update(Action::PlayerClosed(a, Some("falló".into())));
+        s.update(Action::PlayerClosed(a, Some("falló".into()), false));
         assert_eq!(s.tabs.len(), 1, "errors still close the tab");
         s.video_window = false;
         let r1 = s.tabs[0].id;
-        s.update(Action::PlayerClosed(r1, None));
+        s.update(Action::PlayerClosed(r1, None, false));
         assert!(s.tabs.is_empty(), "embedded: nothing left to show");
+    }
+
+    #[test]
+    fn finished_video_autoplays_up_next_in_the_same_tab() {
+        let mut s = with_videos(&["a"]);
+        s.video_window = true;
+        assert!(s.config.player.autoplay, "on by default");
+        let a = play(&mut s, 0);
+        s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
+        let effects = s.update(Action::PlayerClosed(a, None, true));
+        match effects.as_slice() {
+            [Effect::Open(id, p), Effect::Watch { video, .. }, ..] if *id == a && video == "r1" => {
+                assert_eq!(p.video.as_ref().unwrap().id, "r1");
+            }
+            other => panic!("expected autoplay of r1, got {other:?}"),
+        }
+        assert!(!s.active_tab().unwrap().ended);
+        assert!(s.watched.contains("r1"));
+    }
+
+    #[test]
+    fn autoplay_skips_watched_and_respects_the_switch() {
+        let mut s = with_videos(&["a"]);
+        s.video_window = true;
+        let a = play(&mut s, 0);
+        s.watched.insert("r1".into());
+        s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
+        match s.update(Action::PlayerClosed(a, None, true)).as_slice() {
+            [Effect::Open(_, p), ..] => assert_eq!(p.video.as_ref().unwrap().id, "r2"),
+            other => panic!("expected r2, got {other:?}"),
+        }
+        s.config.player.autoplay = false;
+        let effects = s.update(Action::PlayerClosed(a, None, true));
+        assert!(effects.is_empty(), "off: falls back to ended");
+        assert!(s.active_tab().unwrap().ended);
     }
 
     #[test]

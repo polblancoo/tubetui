@@ -290,6 +290,7 @@ sub_lang = "es"          # subtitles and dubbing language
 background_audio = true  # keep listening while browsing
 sponsorblock = true      # skip sponsors, self promotion and "subscribe!" reminders
 voice = ""               # "ru" | "en": translate videos in other languages by itself (needs vot-cli)
+autoplay = true          # play the next Up next video when one ends
 
 [media]
 video_dirs = ["~/Videos"]

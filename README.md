@@ -95,6 +95,8 @@ Every video opens in its own tab.
 - **[SponsorBlock](https://sponsor.ajay.app)**: sponsors, self promotion and
   "subscribe!" reminders are skipped by themselves (they show green on the
   progress bar). Intros and outros are left alone
+- **Autoplay**: when a video ends, the first unwatched **Up next** video plays
+  in the same tab (on by default; Settings turns it off)
 
 **On your computer**
 - **Mis videos** and **Mi música** list the files in the folders you choose

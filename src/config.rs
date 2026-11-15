@@ -74,6 +74,13 @@ pub struct PlayerConfig {
     /// it, and videos whose audio is in another language are translated on
     /// their own. Empty: off.
     pub voice: String,
+    /// When a YouTube video ends, play the first unwatched Up next video in the same tab.
+    #[serde(default = "default_true")]
+    pub autoplay: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -344,6 +351,7 @@ impl Default for PlayerConfig {
             background_audio: true,
             sponsorblock: true,
             voice: String::new(),
+            autoplay: true,
         }
     }
 }
@@ -452,6 +460,7 @@ mod tests {
         assert!(c.player.hwdec);
         assert_eq!(c.player.language, Language::Subtitles);
         assert_eq!(c.player.sub_lang, "es");
+        assert!(c.player.autoplay);
         assert!(c.ui.sidebar);
         assert_eq!(c.ui.max_tabs, 9);
         assert_eq!(c.ui.icons, IconSet::Emoji);
@@ -490,6 +499,9 @@ mod tests {
         assert_eq!(c.player.mode, PlayerMode::Window);
         assert_eq!(c.player.max_height, 480);
         assert_eq!(c.player.prefer_codec, "avc1");
+        assert!(c.player.autoplay, "on by default, even for existing files");
+        let c = Config::from_toml("[player]\nautoplay = false\n").unwrap();
+        assert!(!c.player.autoplay);
         assert_eq!(c.ui, UiConfig::default());
     }
 

@@ -149,6 +149,7 @@ pub enum Setting {
     BackgroundAudio,
     SponsorBlock,
     Voice,
+    Autoplay,
     AppLang,
     Icons,
     Theme,
@@ -173,7 +174,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Browser,
         Self::ImportCookies,
         Self::Refresh,
@@ -185,6 +186,7 @@ impl Setting {
         Self::BackgroundAudio,
         Self::SponsorBlock,
         Self::Voice,
+        Self::Autoplay,
         Self::AppLang,
         Self::Icons,
         Self::Theme,
@@ -223,6 +225,7 @@ impl Setting {
             Self::BackgroundAudio => ("Al salir de la pestaña del video", "When leaving the video tab"),
             Self::SponsorBlock => ("Saltar patrocinios (SponsorBlock)", "Skip sponsors (SponsorBlock)"),
             Self::Voice => ("Traducir la voz solo a…", "Translate the voice automatically to…"),
+            Self::Autoplay => ("Reproducir el siguiente video al terminar", "Autoplay the next video"),
             Self::AppLang => ("Idioma de la app (Ctrl+y + l)", "App language (Ctrl+y + l)"),
             Self::Icons => ("Íconos", "Icons"),
             Self::Theme => ("Tema de colores", "Colour theme"),
@@ -525,6 +528,12 @@ pub enum Action {
     BrowsersUsed(HashMap<String, i64>),
     /// The watch page of a tab's video arrived.
     Watched(TabId, Result<Watch, String>),
+    /// Details fetched ahead for a video, before any tab plays it.
+    Prefetched {
+        video: String,
+        watch: Result<Watch, String>,
+        segments: Vec<Segment>,
+    },
     /// The login was (re)read. `cookies` is for the runtime; `subs` are my channels.
     SessionReady {
         cookies: Option<PathBuf>,
@@ -580,7 +589,8 @@ pub enum Action {
     GoTab(usize),
     CloseTab,
     /// The player went away on its own (window closed, video ended, failed to start).
-    PlayerClosed(TabId, Option<String>),
+    /// `finished` is true when the video played to the end.
+    PlayerClosed(TabId, Option<String>, bool),
     /// streamlink's answer for a live stream: the address to play, or `None` to use yt-dlp.
     LiveSource(TabId, Option<String>),
     /// The player of a YouTube video stopped here (seconds), to resume it later.
@@ -863,6 +873,15 @@ impl Playback {
     }
 }
 
+/// Details fetched ahead for the selected video, consumed when it is played
+/// so its tab shows up next and skips without another round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prefetched {
+    pub video: String,
+    pub watch: Option<Watch>,
+    pub segments: Vec<Segment>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub id: TabId,
@@ -993,6 +1012,8 @@ pub struct State {
     pub update: Option<Update>,
     /// Videos I watched, here or on YouTube.
     pub watched: HashSet<String>,
+    /// Details fetched ahead for the selected video, if it is played next.
+    pub prefetched: Option<Prefetched>,
     /// The last system check.
     pub system: Option<(Manager, Vec<Check>)>,
     /// Feeds show the watched videos too (`v`).
@@ -1052,6 +1073,7 @@ impl State {
             file_sort: FileSort::default(),
             update: None,
             watched: HashSet::new(),
+            prefetched: None,
             system: None,
             tabs: Vec::new(),
             active: 0,
@@ -1201,6 +1223,10 @@ impl State {
                 "" => self.tr("no (con T a mano)", "no (with T by hand)").into(),
                 code => voice_name(code, lang).into(),
             },
+            Setting::Autoplay => {
+                let (es, en) = on_off(player.autoplay);
+                self.tr(es, en).into()
+            }
             Setting::AppLang => lang.name().into(),
             Setting::Icons => self.config.ui.icons.as_str().into(),
             Setting::Theme => self.config.ui.theme.name().into(),
@@ -1399,6 +1425,13 @@ impl State {
                     }
                 }
             }
+            Action::Prefetched { video, watch, segments } => {
+                // A newer prefetch may have filled the slot while this one
+                // was fetching: only an empty slot or the same video wins.
+                if self.prefetched.as_ref().is_none_or(|p| p.video == video) {
+                    self.prefetched = Some(Prefetched { video, watch: watch.ok(), segments });
+                }
+            }
             Action::CommentsLoaded(id, result) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
                     // Failed: shown as none rather than loading forever.
@@ -1550,7 +1583,12 @@ impl State {
                 }
                 return vec![Effect::OpenDirect(id, playback)];
             }
-            Action::PlayerClosed(id, error) => {
+            Action::PlayerClosed(id, error, finished) => {
+                if error.is_none() && finished && self.config.player.autoplay {
+                    if let Some(effects) = self.autoplay(id) {
+                        return effects;
+                    }
+                }
                 let keep = error.is_none() && self.tabs.iter().any(|t| t.id == id && self.details_shown(t));
                 if !keep {
                     self.remove_tab(id);
@@ -1996,6 +2034,11 @@ impl State {
                     .tr("Se aplica a los próximos videos (hace falta vot-cli)", "Applies to the next videos (needs vot-cli)")
                     .into();
                 save("player", "voice", SettingValue::Text(self.config.player.voice.clone()))
+            }
+            Setting::Autoplay => {
+                player.autoplay = !player.autoplay;
+                self.status = self.tr("Se aplica al terminar el video", "Applies when the video ends").into();
+                save("player", "autoplay", SettingValue::Bool(self.config.player.autoplay))
             }
             Setting::AppLang => self.toggle_ui_lang(),
             Setting::Icons => {
@@ -2510,6 +2553,19 @@ impl State {
             .into_iter()
             .chain(downloading.map(|d| &d.video))
             .find(|v| v.live == crate::domain::Live::No && !self.sizes.contains_key(&v.id))
+    }
+
+    /// The selected YouTube video, if its details and skips are worth fetching
+    /// ahead so playing it feels instant.
+    pub fn prefetch_wanted(&self) -> Option<&Video> {
+        let video = self.selected_video()?;
+        if self.prefetched.as_ref().is_some_and(|p| p.video == video.id) {
+            return None;
+        }
+        if self.tabs.iter().any(|t| t.playback.video.as_ref().is_some_and(|v| v.id == video.id)) {
+            return None;
+        }
+        Some(video)
     }
 
     /// `(id, name, url)` of the channel the user is pointing at.
@@ -3046,14 +3102,40 @@ impl State {
         self.tabs.push(Tab::new(id, playback.clone()));
         self.active = self.tabs.len();
         let mut effects = vec![Effect::Open(id, playback.clone())];
+        // Details fetched ahead while the selection rested on the video.
+        let prefetched = playback.video.as_ref().and_then(|v| self.prefetched.take_if(|p| p.video == v.id));
+        let has_prefetch = prefetched.is_some();
         if let Some(video) = &playback.video {
             self.watched.insert(video.id.clone());
-            effects.push(Effect::Watch { tab: id, video: video.id.clone() });
+            if prefetched.as_ref().is_none_or(|p| p.watch.is_none()) {
+                effects.push(Effect::Watch { tab: id, video: video.id.clone() });
+            }
             effects.push(Effect::SaveWatched(video.id.clone()));
         }
+        if let Some(p) = prefetched {
+            if let Some(watch) = p.watch {
+                if let Some(rating) = watch.rating {
+                    if let Some(video) = &playback.video {
+                        self.ratings.insert(video.id.clone(), rating);
+                    }
+                }
+                let token = watch.comments_token.clone();
+                if let Some(tab) = self.tabs.last_mut() {
+                    tab.watch = Some(watch);
+                    tab.segments = p.segments;
+                }
+                if let Some(token) = token {
+                    effects.push(Effect::Comments { tab: id, token });
+                }
+            } else if let Some(tab) = self.tabs.last_mut() {
+                tab.segments = p.segments;
+            }
+        }
         effects.extend(history);
-        if let Some(video) = playback.video.as_ref().filter(|_| self.config.player.sponsorblock) {
-            effects.push(Effect::Segments { tab: id, video: video.id.clone() });
+        if !has_prefetch {
+            if let Some(video) = playback.video.as_ref().filter(|_| self.config.player.sponsorblock) {
+                effects.push(Effect::Segments { tab: id, video: video.id.clone() });
+            }
         }
         effects
     }
@@ -3071,6 +3153,71 @@ impl State {
             self.status = format!("⏯ {} {}", self.tr("Sigue desde", "Resuming at"), clock(start));
         }
         vec![Effect::Open(id, playback)]
+    }
+
+    /// Plays the first unwatched Up next video in the same tab, if any.
+    fn autoplay(&mut self, id: TabId) -> Option<Vec<Effect>> {
+        let index = self.tabs.iter().position(|t| t.id == id)?;
+        if self.tabs[index].playback.video.is_none() {
+            return None;
+        }
+        let current = self.tabs[index].playback.video.as_ref().map(|v| v.id.clone());
+        let open: Vec<String> =
+            self.tabs.iter().filter_map(|t| t.playback.video.as_ref().map(|v| v.id.clone())).collect();
+        let next = self.tabs[index]
+            .related_videos()
+            .iter()
+            .filter(|v| Some(&v.id) != current.as_ref())
+            .filter(|v| !open.contains(&v.id))
+            .find(|v| !self.watched.contains(&v.id))
+            .or_else(|| self.tabs[index].related_videos().first())
+            .cloned()?;
+        let start = self.resume_at(&next.id);
+        let status = format!("▶ {}: {}", self.tr("A continuación", "Up next"), next.title);
+        let history = self.remember(next.clone(), start);
+        self.watched.insert(next.id.clone());
+        let sponsorblock = self.config.player.sponsorblock;
+        self.fullscreen = false;
+        // Details fetched ahead while the video was up next.
+        let prefetched = self.prefetched.take_if(|p| p.video == next.id);
+        if let Some(rating) = prefetched.as_ref().and_then(|p| p.watch.as_ref()).and_then(|w| w.rating) {
+            self.ratings.insert(next.id.clone(), rating);
+        }
+        let has_prefetch = prefetched.is_some();
+        let (token, watch, segments) = match prefetched {
+            Some(p) => (p.watch.as_ref().and_then(|w| w.comments_token.clone()), p.watch, p.segments),
+            None => (None, None, Vec::new()),
+        };
+        let has_watch = watch.is_some();
+        let playback = {
+            let tab = &mut self.tabs[index];
+            tab.playback = Playback::youtube(next.clone());
+            tab.playback.start = start;
+            tab.related = 0;
+            tab.on_related = false;
+            tab.skipped.clear();
+            tab.comments = None;
+            tab.comments_from = 0;
+            tab.ended = false;
+            tab.watch = watch;
+            tab.segments = segments;
+            tab.playback.clone()
+        };
+        self.status = status;
+        let mut effects = vec![Effect::Open(id, playback)];
+        if has_watch {
+            if let Some(token) = token {
+                effects.push(Effect::Comments { tab: id, token });
+            }
+        } else {
+            effects.push(Effect::Watch { tab: id, video: next.id.clone() });
+        }
+        effects.push(Effect::SaveWatched(next.id.clone()));
+        effects.extend(history);
+        if !has_prefetch && sponsorblock {
+            effects.push(Effect::Segments { tab: id, video: next.id });
+        }
+        Some(effects)
     }
 
     /// Where I left `id`, if it is worth resuming.
@@ -4251,10 +4398,10 @@ mod tests {
         let mut s = with_videos(&["a", "b"]);
         let a = play(&mut s, 0);
         play(&mut s, 1);
-        assert!(s.update(Action::PlayerClosed(a, Some("mpv no está".into()))).is_empty());
+        assert!(s.update(Action::PlayerClosed(a, Some("mpv no está".into()), false)).is_empty());
         assert_eq!(s.active_tab().unwrap().playback.video, Some(video("b")));
         assert_eq!(s.status, "mpv no está");
-        s.update(Action::PlayerClosed(TabId(99), None));
+        s.update(Action::PlayerClosed(TabId(99), None, false));
         assert_eq!(s.tabs.len(), 1);
     }
 
@@ -4759,7 +4906,7 @@ mod tests {
         let a = play(&mut s, 0);
         s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
         s.update(Action::Stopped { video: "a".into(), position: Some(125), duration: Some(600) });
-        assert!(s.update(Action::PlayerClosed(a, None)).is_empty());
+        assert!(s.update(Action::PlayerClosed(a, None, false)).is_empty());
         let tab = s.active_tab().unwrap();
         assert!(tab.ended && tab.on_related, "the tab stays, on its up next list");
         s.update(Action::Down);
@@ -4772,12 +4919,81 @@ mod tests {
             other => panic!("expected Open, got {other:?}"),
         }
         assert!(!s.active_tab().unwrap().ended);
-        s.update(Action::PlayerClosed(a, Some("falló".into())));
+        s.update(Action::PlayerClosed(a, Some("falló".into()), false));
         assert_eq!(s.tabs.len(), 1, "errors still close the tab");
         s.video_window = false;
         let r1 = s.tabs[0].id;
-        s.update(Action::PlayerClosed(r1, None));
+        s.update(Action::PlayerClosed(r1, None, false));
         assert!(s.tabs.is_empty(), "embedded: nothing left to show");
+    }
+
+    #[test]
+    fn finished_video_autoplays_up_next_in_the_same_tab() {
+        let mut s = with_videos(&["a"]);
+        s.video_window = true;
+        assert!(s.config.player.autoplay, "on by default");
+        let a = play(&mut s, 0);
+        s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
+        let effects = s.update(Action::PlayerClosed(a, None, true));
+        match effects.as_slice() {
+            [Effect::Open(id, p), Effect::Watch { video, .. }, ..] if *id == a && video == "r1" => {
+                assert_eq!(p.video.as_ref().unwrap().id, "r1");
+            }
+            other => panic!("expected autoplay of r1, got {other:?}"),
+        }
+        assert!(!s.active_tab().unwrap().ended);
+        assert!(s.watched.contains("r1"));
+    }
+
+    #[test]
+    fn autoplay_skips_watched_and_respects_the_switch() {
+        let mut s = with_videos(&["a"]);
+        s.video_window = true;
+        let a = play(&mut s, 0);
+        s.watched.insert("r1".into());
+        s.update(Action::Watched(a, Ok(Watch { related: vec![video("r1"), video("r2")], ..Watch::default() })));
+        match s.update(Action::PlayerClosed(a, None, true)).as_slice() {
+            [Effect::Open(_, p), ..] => assert_eq!(p.video.as_ref().unwrap().id, "r2"),
+            other => panic!("expected r2, got {other:?}"),
+        }
+        s.config.player.autoplay = false;
+        let effects = s.update(Action::PlayerClosed(a, None, true));
+        assert!(effects.is_empty(), "off: falls back to ended");
+        assert!(s.active_tab().unwrap().ended);
+    }
+
+    #[test]
+    fn prefetched_details_fill_the_tab_on_play() {
+        let mut s = with_videos(&["a"]);
+        let watch =
+            Watch { related: vec![video("r1")], comments_token: Some("T".into()), ..Watch::default() };
+        let segment = Segment { start: 10_000, end: 20_000, category: "sponsor".into() };
+        assert!(s.update(Action::Prefetched { video: "a".into(), watch: Ok(watch), segments: vec![segment] }).is_empty());
+        assert!(s.prefetch_wanted().is_none(), "already fetched for the selection");
+        match s.update(Action::Enter).as_slice() {
+            [Effect::Open(_, p), Effect::SaveWatched(_), Effect::Comments { tab: _, token }, Effect::SaveHistory(_)] => {
+                assert_eq!(p.video.as_ref().unwrap().id, "a");
+                assert_eq!(token, "T");
+            }
+            other => panic!("expected Open, SaveWatched, Comments and SaveHistory, got {other:?}"),
+        }
+        let tab = s.active_tab().unwrap();
+        assert_eq!(tab.watch.as_ref().unwrap().related, vec![video("r1")]);
+        assert_eq!(tab.segments.len(), 1);
+        assert!(s.prefetch_wanted().is_none(), "already open in a tab");
+    }
+
+    #[test]
+    fn failed_prefetch_still_asks_for_details_on_play() {
+        let mut s = with_videos(&["a"]);
+        assert!(s.update(Action::Prefetched { video: "a".into(), watch: Err("offline".into()), segments: vec![] }).is_empty());
+        match s.update(Action::Enter).as_slice() {
+            [Effect::Open(_, _), Effect::Watch { video, .. }, Effect::SaveWatched(_), Effect::SaveHistory(_), ..] => {
+                assert_eq!(video, "a");
+            }
+            other => panic!("expected Open and Watch, got {other:?}"),
+        }
+        assert!(s.active_tab().unwrap().watch.is_none());
     }
 
     #[test]

@@ -182,6 +182,9 @@ struct Runtime {
     /// The video waiting to be weighed, since when; one yt-dlp at a time.
     size_wait: Option<(String, Instant)>,
     sizing: bool,
+    /// The video waiting for its details, since when; one fetch at a time.
+    prefetch_wait: Option<(String, Instant)>,
+    prefetch_inflight: Option<String>,
     /// The yt-dlp process of each running download, to cancel it.
     downloads: HashMap<u64, Arc<Mutex<Option<std::process::Child>>>>,
     /// Players of closed tabs, quitting in the background.
@@ -249,6 +252,8 @@ impl Runtime {
             next_poll: Instant::now() + SUBS_FIRST_POLL,
             size_wait: None,
             sizing: false,
+            prefetch_wait: None,
+            prefetch_inflight: None,
             closing: Vec::new(),
             animations: Animations::default(),
             thumbs: Thumbnails::default(),
@@ -346,10 +351,10 @@ impl Runtime {
                     ui::draw(f, &self.state, &view);
                     self.animations.render(f);
                 })?;
-                dbg(format!("draw {:?}", t.elapsed()));
+                dbg(|| format!("draw {:?}", t.elapsed()));
                 let t = Instant::now();
                 self.place_videos(terminal.size()?.into());
-                dbg(format!("place {:?}", t.elapsed()));
+                dbg(|| format!("place {:?}", t.elapsed()));
                 if thumbnails {
                     let tab = self.state.active_tab();
                     let current = tab.and_then(|t| t.playback.video.as_ref()).map(|v| v.id.as_str());
@@ -394,7 +399,7 @@ impl Runtime {
             if event::poll(wait).context("reading terminal events")? {
                 match event::read()? {
                     Event::Key(key) => {
-                        dbg(format!("key {:?} {:?}", key.code, key.kind));
+                        dbg(|| format!("key {:?} {:?}", key.code, key.kind));
                         pending.extend(keymap::map(key, self.state.key_context()))
                     }
                     // Another program in front: an overlay would float over it.
@@ -435,13 +440,18 @@ impl Runtime {
             pending.extend(self.voices_to_translate());
             self.poll_subs();
             self.ask_size();
+            self.ask_prefetch();
             self.retry_with_cookies(terminal.size()?.into());
             // Players that went away: their tab may stay (details and up next).
             let exited: Vec<TabId> =
                 self.players.iter_mut().filter_map(|(id, p)| p.has_exited().then_some(*id)).collect();
             for id in exited {
+                let finished = self.players.get(&id).is_some_and(|p| {
+                    let info = p.info();
+                    Self::is_finished(info.position, info.duration)
+                });
                 self.stop(id);
-                pending.push(Action::PlayerClosed(id, None));
+                pending.push(Action::PlayerClosed(id, None, finished));
             }
             for action in pending {
                 dirty = true;
@@ -458,11 +468,22 @@ impl Runtime {
                 if let Action::Sized(..) = &action {
                     self.sizing = false;
                 }
+                if let Action::Prefetched { video, .. } = &action {
+                    // A newer prefetch started while this one was fetching.
+                    if self.prefetch_inflight.as_deref() != Some(video) {
+                        continue;
+                    }
+                    self.prefetch_inflight = None;
+                }
                 for effect in self.state.update(action) {
                     let t = Instant::now();
-                    let name = format!("{effect:?}").chars().take(40).collect::<String>();
+                    let name = debug_path()
+                        .is_some()
+                        .then(|| format!("{effect:?}").chars().take(40).collect::<String>())
+                        .unwrap_or_default();
                     self.perform(effect, terminal)?;
-                    dbg(format!("effect {name} {:?}", t.elapsed()));
+                    let elapsed = t.elapsed();
+                    dbg(move || format!("effect {name} {elapsed:?}"));
                 }
             }
             // Players whose tab is gone (the video ended or mpv failed).
@@ -536,6 +557,39 @@ impl Runtime {
         });
     }
 
+    /// Fetches the selected video's details and skips once the selection
+    /// rests on it, so playing it feels instant. One fetch at a time.
+    fn ask_prefetch(&mut self) {
+        if self.prefetch_inflight.is_some() {
+            return;
+        }
+        let Some(video) = self.state.prefetch_wanted().cloned() else {
+            self.prefetch_wait = None;
+            return;
+        };
+        match &self.prefetch_wait {
+            Some((id, since)) if *id == video.id && since.elapsed() >= SIZE_DELAY => {}
+            Some((id, _)) if *id == video.id => return,
+            _ => {
+                self.prefetch_wait = Some((video.id, Instant::now()));
+                return;
+            }
+        }
+        self.prefetch_wait = None;
+        self.prefetch_inflight = Some(video.id.clone());
+        let cookies = self.cookies.clone();
+        let sponsorblock = self.state.config.player.sponsorblock;
+        self.background(move || {
+            let watch = youtube::watch(&video.id, cookies.as_deref()).map_err(|e| e.to_string());
+            let segments = if sponsorblock {
+                tubetui::sponsorblock::fetch(&video.id).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Action::Prefetched { video: video.id, watch, segments }
+        });
+    }
+
     /// Videos playing a SponsorBlock segment not skipped yet.
     fn segments_to_skip(&self) -> Vec<Action> {
         (self.state.tabs.iter().filter(|t| !t.segments.is_empty()))
@@ -569,6 +623,16 @@ impl Runtime {
         let video = self.videos.get(&id)?.clone();
         let seconds = |s: Option<f64>| s.filter(|s| s.is_finite() && *s >= 0.0).map(|s| s as u32);
         Some(Action::Stopped { video, position: seconds(info.position), duration: seconds(info.duration) })
+    }
+
+    /// The video played to the end, not closed halfway.
+    fn is_finished(position: Option<f64>, duration: Option<f64>) -> bool {
+        match (position, duration) {
+            (Some(pos), Some(dur)) if pos.is_finite() && dur.is_finite() && dur > 0.0 && pos >= 30.0 => {
+                dur - pos < 30.0 || pos / dur > 0.95
+            }
+            _ => false,
+        }
     }
 
     fn perform(&mut self, effect: Effect, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -643,7 +707,7 @@ impl Runtime {
             }
             Effect::SaveWatched(id) => {
                 if let Err(e) = store::add_watched(&self.paths.watched, &id) {
-                    dbg(format!("watched.txt: {e}"));
+                    dbg(|| format!("watched.txt: {e}"));
                 }
             }
             Effect::Trash(paths) => {
@@ -741,7 +805,7 @@ impl Runtime {
             Effect::EditConfig => self.edit_config(terminal)?,
             Effect::SaveHistory(history) => {
                 if let Err(e) = store::save_history(&self.paths.history, &history) {
-                    dbg(format!("history.json: {e}"));
+                    dbg(|| format!("history.json: {e}"));
                 }
             }
             Effect::SaveLater(videos) => {
@@ -832,7 +896,7 @@ impl Runtime {
             }
             Effect::SaveDownloads(downloads) => {
                 if let Err(e) = store::save_downloads(&self.paths.downloads, &downloads) {
-                    dbg(format!("downloads.json: {e}"));
+                    dbg(|| format!("downloads.json: {e}"));
                 }
             }
             Effect::Open(id, playback) => {
@@ -932,7 +996,7 @@ impl Runtime {
             }
             Err(e) => {
                 let failed = self.tr("No se pudo iniciar mpv", "Could not start mpv");
-                self.send(Action::PlayerClosed(id, Some(format!("{failed}: {e}"))))
+                self.send(Action::PlayerClosed(id, Some(format!("{failed}: {e}")), false))
             }
         }
     }
@@ -950,7 +1014,7 @@ impl Runtime {
             let Some(playback) = self.state.tabs.iter().find(|t| t.id == id).map(|t| t.playback.clone()) else {
                 continue;
             };
-            dbg(format!("retry {id:?} with cookies"));
+            dbg(|| format!("retry {id:?} with cookies"));
             self.open(id, &playback, true, screen);
         }
     }
@@ -1148,16 +1212,25 @@ fn import_cookies(source: &Path, dest: &Path, lang: Lang) -> Result<String, Stri
     Ok(dest.display().to_string())
 }
 
+/// Where the timing trace goes, when `TUBETUI_DEBUG` points at a file.
+/// Read once and cached, so the hot paths stay free when tracing is off.
+fn debug_path() -> Option<&'static PathBuf> {
+    use std::sync::OnceLock;
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| std::env::var_os("TUBETUI_DEBUG").map(PathBuf::from)).as_ref()
+}
+
 /// Timing trace for diagnosing lag: set `TUBETUI_DEBUG=/path/to/file`.
-fn dbg(msg: impl AsRef<str>) {
+/// The message is built only when tracing is on, so the hot paths that call
+/// this on every draw, key and effect stay free when it is off.
+fn dbg(message: impl FnOnce() -> String) {
     use std::io::Write;
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
+    let Some(path) = debug_path() else { return };
     let start = *START.get_or_init(Instant::now);
-    if let Ok(path) = std::env::var("TUBETUI_DEBUG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = writeln!(f, "{:>8.1} {}", start.elapsed().as_secs_f64() * 1000.0, msg.as_ref());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{:>8.1} {}", start.elapsed().as_secs_f64() * 1000.0, message());
     }
 }
 

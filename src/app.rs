@@ -3108,28 +3108,34 @@ impl State {
             .find(|v| !self.watched.contains(&v.id))
             .or_else(|| self.tabs[index].related_videos().first())
             .cloned()?;
-        let tab = &mut self.tabs[index];
-        tab.playback = Playback::youtube(next.clone());
-        tab.playback.start = self.resume_at(&next.id);
-        tab.watch = None;
-        tab.related = 0;
-        tab.on_related = false;
-        tab.segments.clear();
-        tab.skipped.clear();
-        tab.comments = None;
-        tab.comments_from = 0;
-        tab.ended = false;
-        self.fullscreen = false;
-        self.status = format!("▶ {}: {}", self.tr("A continuación", "Up next"), next.title);
-        let history = self.remember(next.clone(), tab.playback.start);
+        let start = self.resume_at(&next.id);
+        let status = format!("▶ {}: {}", self.tr("A continuación", "Up next"), next.title);
+        let history = self.remember(next.clone(), start);
         self.watched.insert(next.id.clone());
+        let sponsorblock = self.config.player.sponsorblock;
+        self.fullscreen = false;
+        let playback = {
+            let tab = &mut self.tabs[index];
+            tab.playback = Playback::youtube(next.clone());
+            tab.playback.start = start;
+            tab.watch = None;
+            tab.related = 0;
+            tab.on_related = false;
+            tab.segments.clear();
+            tab.skipped.clear();
+            tab.comments = None;
+            tab.comments_from = 0;
+            tab.ended = false;
+            tab.playback.clone()
+        };
+        self.status = status;
         let mut effects = vec![
-            Effect::Open(id, tab.playback.clone()),
+            Effect::Open(id, playback),
             Effect::Watch { tab: id, video: next.id.clone() },
             Effect::SaveWatched(next.id.clone()),
         ];
         effects.extend(history);
-        if self.config.player.sponsorblock {
+        if sponsorblock {
             effects.push(Effect::Segments { tab: id, video: next.id });
         }
         Some(effects)
